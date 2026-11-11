@@ -82,6 +82,8 @@ points at where it belongs.
 ```
 ```{grid-item} [](folder_prefix)
 ```
+```{grid-item} [](engine)
+```
 ```{grid-item} [](execution_mode)
 ```
 ```{grid-item} [](lammps_executable)
@@ -784,6 +786,44 @@ raises a validation error; remove the key. To point calphy at a specific binary,
 use [`lammps_executable`](lammps_executable) (and [`mpi_executable`](mpi_executable)
 for parallel runs) — these now apply to **every** mode and reference phase.
 
+
+---
+
+(engine)=
+#### `engine`
+
+_type_: string \
+_default_: lammps \
+_example_:
+```
+engine: thermotorch
+```
+
+The engine that runs the molecular dynamics.
+
+- `lammps` (default): LAMMPS, with the potential given by
+  [`pair_style`](pair_style) / [`pair_coeff`](pair_coeff).
+- `thermotorch`: runs modes `fe` and `ts` on any torch-native potential
+  (MACE, GRACE, NequIP, ...) through
+  [thermotorch](https://github.com/thermoatoms/thermotorch), which re-hosts
+  calphy's protocols on [torch-sim](https://github.com/Radical-AI/torch-sim)
+  and writes the same output files, so the results are post-processed the same
+  way. The potential is given in the [`model`](model-block) block;
+  thermotorch-only settings go in the [`thermotorch`](thermotorch-block)
+  block. Needs `pip install git+https://github.com/thermoatoms/thermotorch`.
+
+  Settings thermotorch cannot honour are refused when the input is read, not
+  ignored: other modes, `pair_style`/`pair_coeff`, the LAMMPS execution keys,
+  the `nose_hoover`/`berendsen`/`quantum_thermal_bath`/`monte_carlo` blocks,
+  `md.cmdargs`/`md.init_commands`, a pressure range, and an anisotropic
+  pressure. Settings left unset take thermotorch's defaults, which differ
+  from calphy's in two deliberate places: the structural checks of
+  `tolerance` (`solid_fraction`, `liquid_fraction`) are on,
+  and the pressure convergence uses a standard-error test (see
+  [`pressure_convergence`](tt_pressure_convergence)). The values actually
+  used are written to `input_file.yaml` in the simulation folder, and
+  `report.yaml` gains an `engine` block recording the model, the package
+  versions and the seed.
 
 ---
 
@@ -2091,3 +2131,193 @@ with `queue.cores / 2` cores each, which halves the wall time of the sweeps at
 the same total core count. Needs `queue.cores >= 2`; with a single core the
 cells run sequentially and a warning is logged. The results do not depend on
 this setting.
+
+---
+
+(model-block)=
+## `model` block
+
+The potential for [`engine: thermotorch`](engine): any Python callable (a
+class or a function) that returns a
+[torch-sim](https://github.com/Radical-AI/torch-sim) model, named by its full
+import path. There is no fixed list of supported models.
+
+GRACE-FS, using thermotorch's torch implementation and the same YAML file
+LAMMPS' `pair_style grace/fs` reads:
+
+```
+engine: thermotorch
+model:
+  name: thermotorch.models.grace_fs.GraceFSModel
+  kwargs:
+    model_path: /path/to/FS_model.yaml
+    elements: [Cu, Ag]
+  device: cuda
+```
+
+A model that needs a few lines of setup (GRACE-2L through `grace-runtime`,
+MACE, NequIP, ...) is given as a small factory function in a file of your
+own, named as `file.py:function`:
+
+```
+model:
+  name: ./my_models.py:grace_2l_omat
+```
+
+```python
+# my_models.py
+def grace_2l_omat(device, dtype):
+    from grace_runtime.torchsim import GRACERuntimeModel
+    return GRACERuntimeModel("GRACE-2L-OMAT-large-base-fp64", device=str(device),
+                             dtype=dtype, compute_forces=True, compute_stress=True)
+```
+
+Before any MD runs, calphy checks that the model computes forces and stress
+(the pressure is read in every averaging stage) and that it runs in float64.
+
+---
+
+(model_name)=
+#### `name`
+
+_type_: string \
+_default_: None \
+_example_:
+```
+name: torch_sim.models.lennard_jones.LennardJonesModel
+```
+
+Full import path of the callable. Accepted forms are
+`package.module.attribute`, `package.module:attribute` and
+`path/to/file.py:attribute`. Relative paths are relative to the directory
+calphy is run from.
+
+---
+
+(model_kwargs)=
+#### `kwargs`
+
+_type_: dict \
+_default_: {} \
+_example_:
+```
+kwargs: {sigma: 3.405, epsilon: 0.0104, cutoff: 7.5, compute_stress: true}
+```
+
+Keyword arguments passed to the callable unchanged. File paths in them are
+relative to the directory calphy is run from. `device` and `dtype` are not
+allowed here: use [`device`](model_device) and [`precision`](model_precision).
+
+---
+
+(model_device)=
+#### `device`
+
+_type_: string \
+_default_: cuda if available, else cpu \
+_example_:
+```
+device: cuda:0
+```
+
+Passed to the callable as a `torch.device`, if it has a parameter called
+`device`.
+
+---
+
+(model_precision)=
+#### `precision`
+
+_type_: string \
+_default_: float64 \
+_example_:
+```
+precision: float32
+```
+
+`float64` or `float32`. Passed to the callable as `dtype`, if it has a
+parameter called `dtype`. thermotorch integrates in float64; with `float32`
+only the model's own evaluation runs in single precision (the model is wrapped
+in thermotorch's `SinglePrecisionModel`), while positions, the integrator and
+the switching work stay float64. Use it for models whose weights are float32
+only, or for speed once the error is checked to be small.
+
+---
+
+(thermotorch-block)=
+## `thermotorch` block
+
+Settings that only [`engine: thermotorch`](engine) has. Unset values take
+thermotorch's defaults.
+
+```
+thermotorch:
+  pressure_convergence: sem
+  melt_t_factor: 2.0
+```
+
+---
+
+(tt_pressure_convergence)=
+#### `pressure_convergence`
+
+_type_: string \
+_default_: sem \
+_example_:
+```
+pressure_convergence: calphy
+```
+
+How the averaging stage decides the box has reached the target pressure.
+
+- `sem` (thermotorch's default): stops once the target lies within
+  `max(tolerance.pressure, 2 x standard error)` of the running mean pressure,
+  after at least 5 cycles, with no drift left in the volume and the kinetic
+  temperature on its setpoint. The residual pressure it accepts costs a
+  second-order amount of free energy, since F is stationary in volume at the
+  target pressure.
+- `calphy`: calphy's own test, `|<P> - target| < tolerance.pressure`.
+
+---
+
+(tt_melt_t_factor)=
+#### `melt_t_factor`
+
+_type_: float \
+_default_: 2.0 \
+_example_:
+```
+melt_t_factor: 2.5
+```
+
+For a liquid, the superheating temperature as a multiple of the highest
+calculation temperature, when [`temperature_high`](temperature_high) is not
+set.
+
+---
+
+(tt_n_melt_steps)=
+#### `n_melt_steps`
+
+_type_: int \
+_default_: n_equilibration_steps \
+_example_:
+```
+n_melt_steps: 50000
+```
+
+MD steps spent melting a liquid's starting structure.
+
+---
+
+(tt_cell_damping)=
+#### `cell_damping`
+
+_type_: float \
+_default_: md.barostat_damping \
+_example_:
+```
+cell_damping: 1.0
+```
+
+Ring-down time in ps of the barostat's cell degree of freedom.

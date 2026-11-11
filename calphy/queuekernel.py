@@ -65,6 +65,11 @@ def setup_calculation(calc):
     job: Phase class
         job class
     """
+    if calc.engine == "thermotorch":
+        from calphy.thermotorch_backend import ThermotorchJob
+
+        return ThermotorchJob(calculation=calc)
+
     # now we need to modify the routines
     if calc.mode == "melting_temperature":
         simfolder = None
@@ -97,6 +102,9 @@ def run_calculation(job):
     -------
     job : Phase class
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
+
     if job.calc.mode == "fe":
         job = routine_fe(job)
     elif job.calc.mode == "ts":
@@ -183,6 +191,12 @@ def main():
         from calphy.input import Calculation
 
         calc = Calculation(**calc_data)
+
+    if calc.engine == "thermotorch":
+        from calphy.thermotorch_backend import ThermotorchJob
+
+        ThermotorchJob(calculation=calc, log_to_screen=log_to_screen).run()
+        return
 
     # format and parse the arguments
     simfolder = calc.create_folders()

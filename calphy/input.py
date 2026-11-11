@@ -68,6 +68,10 @@ def _check_equal(val):
 
 
 def to_list(v: Any) -> List[Any]:
+    # None stays None, so an optional list field (pair_style, pair_coeff)
+    # dumped as null reads back as unset rather than as [None]
+    if v is None:
+        return None
     return np.atleast_1d(v)
 
 
@@ -572,6 +576,33 @@ class MaterialsProject(_StrictInput, title="Input options for materials project"
         return value
 
 
+class TorchModel(_StrictInput, title="Torch model for engine thermotorch"):
+    """The potential for ``engine: thermotorch``: any callable returning a torch-sim model.
+
+    ``name`` is its full import path (``package.module.attribute``,
+    ``package.module:attribute`` or ``path/to/file.py:attribute``); it is
+    called with ``kwargs``, plus ``device`` and ``dtype`` when it has
+    parameters of those names.  See :mod:`calphy.thermotorch_backend`.
+    """
+
+    name: Annotated[str, Field(default="")]
+    kwargs: Annotated[Dict[str, Any], Field(default={})]
+    device: Annotated[Optional[str], Field(default=None)]
+    precision: Annotated[Literal["float64", "float32"], Field(default="float64")]
+
+
+class ThermotorchOptions(_StrictInput, title="Settings only engine thermotorch has"):
+    """Unset values take thermotorch's defaults."""
+
+    # "sem" (thermotorch's default) or "calphy" (calphy's own test)
+    pressure_convergence: Annotated[
+        Optional[Literal["sem", "calphy"]], Field(default=None)
+    ]
+    melt_t_factor: Annotated[Optional[float], Field(default=None, gt=1.0)]
+    n_melt_steps: Annotated[Optional[int], Field(default=None, gt=0)]
+    cell_damping: Annotated[Optional[float], Field(default=None, gt=0)]
+
+
 class Calculation(_StrictInput, title="Main input class"):
     monte_carlo: Optional[MonteCarlo] = MonteCarlo()
     composition_scaling: Optional[CompositionScaling] = CompositionScaling()
@@ -658,6 +689,11 @@ class Calculation(_StrictInput, title="Main input class"):
     ]
 
     script_mode: Annotated[bool, Field(default=False)]
+    # "lammps" (default) or "thermotorch": run fe/ts on a torch-native
+    # potential through thermotorch instead of LAMMPS (calphy.thermotorch_backend)
+    engine: Annotated[str, Field(default="lammps")]
+    model: Optional[TorchModel] = None
+    thermotorch: Optional[ThermotorchOptions] = None
     execution_mode: Annotated[str, Field(default="executable")]
     lammps_executable: Annotated[Union[str, None], Field(default=None)]
     mpi_executable: Annotated[Union[str, None], Field(default=None)]
@@ -704,6 +740,29 @@ class Calculation(_StrictInput, title="Main input class"):
                 "$CALPHY_LAMMPS_EXECUTABLE / lmp on PATH) and remove script_mode "
                 "from the input file."
             )
+
+        if self.engine not in ("lammps", "thermotorch"):
+            raise ValueError(
+                "engine must be 'lammps' (the default) or 'thermotorch', got %r"
+                % self.engine
+            )
+        if self.engine == "thermotorch":
+            # before anything below changes a field: refuses every setting
+            # thermotorch cannot honour, comparing against the defaults
+            from calphy.thermotorch_backend import check_calculation
+
+            check_calculation(self)
+        else:
+            for key in ("model", "thermotorch"):
+                if getattr(self, key) is not None:
+                    raise ValueError(
+                        "%s is only used with engine: thermotorch" % key
+                    )
+            if self.pair_style is None or self.pair_coeff is None:
+                raise ValueError(
+                    "pair_style and pair_coeff are required (or set engine: "
+                    "thermotorch and give a torch model)"
+                )
 
         if self.execution_mode not in ("executable", "library"):
             raise ValueError(
@@ -921,7 +980,7 @@ class Calculation(_StrictInput, title="Main input class"):
 
         _pair_style_names = []
 
-        for ps in self.pair_style:
+        for ps in self.pair_style or []:
             ps_split = ps.split()
             _pair_style_names.append(ps_split[0])
 
@@ -930,7 +989,7 @@ class Calculation(_StrictInput, title="Main input class"):
         self._pair_style_names = _pair_style_names
 
         # now fix pair coeffs with path
-        if self.fix_potential_path:
+        if self.fix_potential_path and self.pair_coeff is not None:
             self.pair_coeff = self.fix_paths(self.pair_coeff)
 
         if np.isscalar(self.n_switching_steps):

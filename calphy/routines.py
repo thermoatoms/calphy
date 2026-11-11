@@ -528,6 +528,8 @@ def routine_fe(job):
     """
     Perform an FE calculation routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run_fe()
     ts = time.time()
     with job:
         job.run_averaging()
@@ -552,6 +554,8 @@ def routine_ts(job):
     """
     Perform ts routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run_ts()
     routine_fe(job)
 
     # Optional pre-flight temperature-range scan: run a fast real-thermostat
