@@ -22,14 +22,17 @@ DOI: 10.1103/PhysRevMaterials.5.103801
 For more information contact:
 sarath.menon@ruhr-uni-bochum.de
 """
-"""thermotorch engine: run ``fe`` / ``ts`` calculations on torch-native potentials.
+"""thermotorch engine: run calculations on torch-native potentials.
+
+Modes ``fe``, ``ts``, ``alchemy`` (and ``alchemy_coupling``) and
+``composition_scaling`` (with label swaps).
 
 With ``engine: thermotorch`` a calculation is not driven through LAMMPS at all.
 calphy still reads and validates the input, builds the structure and creates
 the simulation folder; the calculation itself is handed to
 `thermotorch <https://github.com/thermoatoms/thermotorch>`_, which re-hosts
-calphy's Frenkel-Ladd / Uhlenbeck-Ford / reversible-scaling protocols on
-torch-sim and writes the same output files (``report.yaml``,
+calphy's Frenkel-Ladd / Uhlenbeck-Ford / reversible-scaling / alchemical
+protocols on torch-sim and writes the same output files (``report.yaml``,
 ``forward_N.dat``/``backward_N.dat``, ``temperature_sweep.dat``), so
 :func:`calphy.postprocessing.gather_results` reads the results unchanged.
 
@@ -44,7 +47,9 @@ its full import path in the ``model`` block::
       precision: float64    # float32 runs only the model in single precision
 
 ``device`` and ``dtype`` are passed to the callable when it has parameters of
-those names; ``kwargs`` are passed unchanged.
+those names; ``kwargs`` are passed unchanged. ``mode: alchemy`` takes a list of
+two such blocks, ``[initial, final]`` (``[base, added]`` with
+``alchemy_coupling``).
 
 Only settings thermotorch honours are accepted: anything else set in the input
 (``pair_style``, ``nose_hoover``, ``monte_carlo``, ...) is refused with an
@@ -81,7 +86,7 @@ INSTALL_HINT = (
 )
 
 #: Modes thermotorch implements.
-SUPPORTED_MODES = ("fe", "ts")
+SUPPORTED_MODES = ("fe", "ts", "alchemy", "composition_scaling")
 
 #: Top-level Calculation fields that may be set with engine 'thermotorch'.
 #: An allow-list, not a deny-list: a field calphy adds later is refused until
@@ -97,9 +102,10 @@ ALLOWED_FIELDS = frozenset({
     "temperature", "temperature_high", "pressure",
     # protocol
     "melting_cycle", "npt", "n_equilibration_steps", "n_switching_steps",
-    "n_print_steps", "n_iterations", "spring_constants",
+    "n_print_steps", "n_iterations", "spring_constants", "alchemy_coupling",
     # option blocks (their own fields are checked below)
-    "md", "tolerance", "uhlenbeck_ford_model",
+    "md", "tolerance", "uhlenbeck_ford_model", "composition_scaling",
+    "monte_carlo",
     # labels and job submission, no physics
     "folder_prefix", "phase_name", "reference_composition", "queue",
 })
@@ -115,6 +121,11 @@ ALLOWED_BLOCK_FIELDS = {
         "lattice_constant", "spring_constant", "solid_fraction",
         "liquid_fraction", "dissipation", "pressure",
     }),
+    # forward/reverse_swap_types are LAMMPS type numbers; thermotorch derives
+    # the swap groups from the transformation itself
+    "monte_carlo": frozenset({"n_steps", "n_swaps", "allow_all_swaps"}),
+    "composition_scaling": frozenset({"output_chemical_composition",
+                                      "restrictions"}),
 }
 
 
@@ -173,6 +184,21 @@ def check_calculation(calc):
                 problems.append(
                     "%s.%s: has no thermotorch equivalent" % (block, field)
                 )
+
+    models = calc.model
+    if mode == "alchemy":
+        if models is not None and not (isinstance(models, list) and len(models) == 2):
+            problems.append(
+                "model: mode alchemy needs two models, [initial, final] (or "
+                "[base, added] with alchemy_coupling)"
+            )
+    elif isinstance(models, list):
+        problems.append("model: give one model; a list of two is for mode alchemy")
+    if calc.monte_carlo.n_swaps > 0 and mode != "composition_scaling":
+        problems.append(
+            "monte_carlo.n_swaps: with engine 'thermotorch' swaps apply to "
+            "mode composition_scaling only"
+        )
 
     pressure = calc.pressure
     if pressure is None:
@@ -460,6 +486,18 @@ def to_thermotorch_calculation(calc, seed=None):
     ufm = _user_set(calc.uhlenbeck_ford_model)
     if ufm:
         data["uhlenbeck_ford_model"] = ufm
+    if "alchemy_coupling" in fields_set:
+        data["alchemy_coupling"] = bool(calc.alchemy_coupling)
+    if calc.mode == "composition_scaling":
+        data["composition_scaling"] = {
+            "output_chemical_composition": {
+                str(k): int(v) for k, v in
+                calc.composition_scaling.output_chemical_composition.items()},
+            "restrictions": list(calc.composition_scaling.restrictions),
+        }
+    mc = _user_set(calc.monte_carlo, ALLOWED_BLOCK_FIELDS["monte_carlo"])
+    if mc:
+        data["monte_carlo"] = mc
 
     options = calc.thermotorch
     if options is not None:
@@ -510,18 +548,29 @@ class ThermotorchJob:
 
         # everything that can fail on the input fails before a folder exists
         self.tt_calc = to_thermotorch_calculation(self.calc)
+        n_models = 2 if self.calc.mode == "alchemy" else 1
         if model is None:
-            if self.calc.model is None or not self.calc.model.name:
+            specs = self.calc.model
+            specs = specs if isinstance(specs, list) else [specs]
+            if len(specs) != n_models or any(s is None or not s.name for s in specs):
                 raise ValueError(
                     "engine 'thermotorch' needs a 'model' block naming the "
                     "potential, e.g. model: {name: package.module.Factory}"
+                    + ("; mode alchemy needs a list of two" if n_models == 2 else "")
                 )
-            self.model = build_model(self.calc.model)
-            self._model_record = self.calc.model.model_dump()
+            models = [build_model(s) for s in specs]
+            records = [s.model_dump() for s in specs]
         else:
-            self.model = check_model(model, origin="the model object passed in")
-            self._model_record = {"object": "%s.%s" % (
-                type(model).__module__, type(model).__qualname__)}
+            given = list(model) if isinstance(model, (list, tuple)) else [model]
+            if len(given) != n_models:
+                raise ValueError("pass %d model object(s) for mode %s"
+                                 % (n_models, self.calc.mode))
+            models = [check_model(m, origin="the model object passed in")
+                      for m in given]
+            records = [{"object": "%s.%s" % (type(m).__module__,
+                                             type(m).__qualname__)} for m in given]
+        self.model = models[0] if n_models == 1 else tuple(models)
+        self._model_record = records[0] if n_models == 1 else records
 
         self.simfolder = simfolder if simfolder is not None else self.calc.create_folders()
         self._write_input()
@@ -559,10 +608,31 @@ class ThermotorchJob:
             yaml.safe_dump(indict, fout)
 
     def run(self):
-        """Run the calculation in its mode (``fe`` or ``ts``)."""
-        if self.calc.mode == "ts":
-            return self.run_ts()
-        return self.run_fe()
+        """Run the calculation in its mode."""
+        return {
+            "fe": self.run_fe,
+            "ts": self.run_ts,
+            "alchemy": self.run_alchemy,
+            "composition_scaling": self.run_composition_scaling,
+        }[self.calc.mode]()
+
+    def run_alchemy(self):
+        from thermotorch.routines import routine_alchemy
+
+        self.phase = routine_alchemy(self.tt_calc, simfolder=self.simfolder,
+                                     model=self.model,
+                                     log_to_screen=self.log_to_screen)
+        self._record_engine()
+        return self
+
+    def run_composition_scaling(self):
+        from thermotorch.routines import routine_composition_scaling
+
+        self.phase = routine_composition_scaling(
+            self.tt_calc, simfolder=self.simfolder, model=self.model,
+            log_to_screen=self.log_to_screen)
+        self._record_engine()
+        return self
 
     def run_fe(self):
         from thermotorch.routines import routine_fe

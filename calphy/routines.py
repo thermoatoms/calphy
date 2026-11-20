@@ -624,6 +624,8 @@ def routine_alchemy(job):
     """
     Perform an FE calculation routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
     ts = time.time()
     with job:
         job.run_averaging()
@@ -690,6 +692,8 @@ def routine_composition_scaling(job):
     """
     Perform a compositional scaling routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
     # we set up comp scaling first
     job.logger.info("Calculating composition scaling")
     comp = CompositionTransformation(job.calc)

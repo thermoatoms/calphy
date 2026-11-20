@@ -256,3 +256,125 @@ def test_fe_run_through_calphy_entry_points(tmp_path):
     assert rerun.tolerance.solid_fraction == 0.7
     assert rerun.thermotorch.pressure_convergence == "calphy"
     assert rerun.md.seed == 7
+
+
+# --------------------------------------------------------------------------- #
+# alchemy and composition scaling
+# --------------------------------------------------------------------------- #
+SHIFT_FACTORY = '''
+import torch
+from torch_sim.models.lennard_jones import LennardJonesModel
+
+
+class Shifted(torch.nn.Module):
+    """The LJ plus a constant per atom: F_final - F_initial = shift exactly."""
+
+    def __init__(self, inner, shift):
+        super().__init__()
+        self.inner = inner
+        self.shift = shift
+
+    @property
+    def device(self):
+        return self.inner.device
+
+    @property
+    def dtype(self):
+        return self.inner.dtype
+
+    @property
+    def compute_forces(self):
+        return True
+
+    @property
+    def compute_stress(self):
+        return True
+
+    def forward(self, state, **kwargs):
+        out = dict(self.inner(state, **kwargs))
+        n = torch.bincount(state.system_idx, minlength=state.n_systems)
+        out["energy"] = out["energy"] + self.shift * n.to(out["energy"].dtype)
+        return out
+
+
+def shifted(device, dtype, shift):
+    lj = LennardJonesModel(sigma=3.405, epsilon=0.0104, cutoff=7.5,
+                           compute_stress=True, device=device, dtype=dtype)
+    return Shifted(lj, shift)
+'''
+
+LJ_SPEC = {"name": LJ_NAME, "kwargs": LJ_KWARGS, "device": "cpu"}
+
+
+def test_alchemy_takes_two_models():
+    calc = build(mode="alchemy", model=[LJ_SPEC, LJ_SPEC])
+    assert len(calc.model) == 2
+    assert "two models" in error_of(mode="alchemy")
+    assert "list of two is for mode alchemy" in error_of(model=[LJ_SPEC, LJ_SPEC])
+
+
+def test_swaps_are_refused_outside_composition_scaling():
+    assert "swaps apply to mode composition_scaling" in error_of(
+        monte_carlo={"n_swaps": 1})
+    assert "monte_carlo.forward_swap_types" in error_of(
+        mode="composition_scaling", monte_carlo={"forward_swap_types": [1, 2]})
+
+
+@pytest.mark.slow
+def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
+    pytest.importorskip("thermotorch")
+    from calphy.queuekernel import run_calculation, setup_calculation
+
+    (tmp_path / "models.py").write_text(SHIFT_FACTORY)
+    shifted = {"name": "./models.py:shifted", "kwargs": {"shift": 0.0123},
+               "device": "cpu"}
+    calc = build(mode="alchemy", model=[LJ_SPEC, shifted],
+                 n_equilibration_steps=4000, n_switching_steps=200,
+                 md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
+                 tolerance={"pressure": 1e5},
+                 thermotorch={"pressure_convergence": "calphy"})
+    job = run_calculation(setup_calculation(calc))
+    with open(os.path.join(job.simfolder, "report.yaml")) as fin:
+        report = yaml.safe_load(fin)
+    assert report["results"]["free_energy"] == pytest.approx(0.0123, abs=1e-10)
+    assert [m["name"] for m in report["engine"]["model"]] == [LJ_NAME,
+                                                              "./models.py:shifted"]
+
+
+@pytest.mark.slow
+def test_composition_scaling_through_calphy_is_the_mass_term(tmp_path):
+    pytest.importorskip("thermotorch")
+    import numpy as np
+    from calphy.queuekernel import run_calculation, setup_calculation
+
+    # Kr given Ar's potential: only the mass differs, so F is the mass term
+    same = {"name": "thermotorch.models.BinaryLennardJonesModel",
+            "kwargs": {"element": ["Ar", "Kr"], "sigma": [3.405] * 3,
+                       "epsilon": [0.0104] * 3, "cutoff": 7.5},
+            "device": "cpu"}
+    # calphy builds its lattices for one element only: give the pure Ar cell
+    # as a data file
+    from ase.build import bulk
+    from ase.io import write
+    write(str(tmp_path / "Ar108.data"),
+          bulk("Ar", "fcc", a=5.30, cubic=True).repeat((3, 3, 3)),
+          format="lammps-data")
+    calc = build(element=["Ar", "Kr"], mass=[39.948, 83.798],
+                 lattice=str(tmp_path / "Ar108.data"),
+                 mode="composition_scaling", model=same,
+                 composition_scaling={"output_chemical_composition":
+                                      {"Ar": 99, "Kr": 9}},
+                 monte_carlo={"n_steps": 10, "n_swaps": 1},
+                 n_equilibration_steps=4000, n_switching_steps=100,
+                 md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
+                 tolerance={"pressure": 1e5},
+                 thermotorch={"pressure_convergence": "calphy"})
+    job = run_calculation(setup_calculation(calc))
+    with open(os.path.join(job.simfolder, "report.yaml")) as fin:
+        report = yaml.safe_load(fin)
+    kb = 8.617333262e-5
+    mass_term = 1.5 * kb * 40 * (9 / 108) * np.log(83.798 / 39.948)
+    assert report["results"]["free_energy"] == pytest.approx(-mass_term, abs=1e-10)
+    assert report["results"]["mass_correction"] == pytest.approx(mass_term)
+    assert report["input"]["concentration"].split() == ["0.9166666666666666",
+                                                        "0.08333333333333333"]

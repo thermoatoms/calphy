@@ -692,7 +692,9 @@ class Calculation(_StrictInput, title="Main input class"):
     # "lammps" (default) or "thermotorch": run fe/ts on a torch-native
     # potential through thermotorch instead of LAMMPS (calphy.thermotorch_backend)
     engine: Annotated[str, Field(default="lammps")]
-    model: Optional[TorchModel] = None
+    # one model; for mode alchemy two: [initial, final], or [base, added]
+    # with alchemy_coupling
+    model: Optional[Union[TorchModel, List[TorchModel]]] = None
     thermotorch: Optional[ThermotorchOptions] = None
     execution_mode: Annotated[str, Field(default="executable")]
     lammps_executable: Annotated[Union[str, None], Field(default=None)]

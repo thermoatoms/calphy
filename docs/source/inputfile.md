@@ -803,7 +803,9 @@ The engine that runs the molecular dynamics.
 
 - `lammps` (default): LAMMPS, with the potential given by
   [`pair_style`](pair_style) / [`pair_coeff`](pair_coeff).
-- `thermotorch`: runs modes `fe` and `ts` on any torch-native potential
+- `thermotorch`: runs modes `fe`, `ts`, `alchemy` (including
+  `alchemy_coupling`) and `composition_scaling` (including label swaps) on any
+  torch-native potential
   (MACE, GRACE, NequIP, ...) through
   [thermotorch](https://github.com/thermoatoms/thermotorch), which re-hosts
   calphy's protocols on [torch-sim](https://github.com/Radical-AI/torch-sim)
@@ -814,8 +816,11 @@ The engine that runs the molecular dynamics.
 
   Settings thermotorch cannot honour are refused when the input is read, not
   ignored: other modes, `pair_style`/`pair_coeff`, the LAMMPS execution keys,
-  the `nose_hoover`/`berendsen`/`quantum_thermal_bath`/`monte_carlo` blocks,
-  `md.cmdargs`/`md.init_commands`, a pressure range, and an anisotropic
+  the `nose_hoover`/`berendsen`/`quantum_thermal_bath` blocks, Monte Carlo
+  swaps outside `composition_scaling` and the LAMMPS swap type numbers
+  (`monte_carlo.forward_swap_types`/`reverse_swap_types`; the swap groups
+  follow from the transformation), `md.cmdargs`/`md.init_commands`, a
+  pressure range, and an anisotropic
   pressure. Settings left unset take thermotorch's defaults, which differ
   from calphy's in two deliberate places: the structural checks of
   `tolerance` (`solid_fraction`, `liquid_fraction`) are on,
@@ -2174,6 +2179,24 @@ def grace_2l_omat(device, dtype):
 
 Before any MD runs, calphy checks that the model computes forces and stress
 (the pressure is read in every averaging stage) and that it runs in float64.
+
+`mode: alchemy` switches between two potentials, so it takes a list of two
+model blocks, `[initial, final]`, or `[base, added]` with
+`alchemy_coupling`. Any two torch models can be switched,
+for example two MLIPs on the same cell:
+
+```
+mode: alchemy
+engine: thermotorch
+model:
+  - name: ./my_models.py:mace_mp_small
+  - name: ./my_models.py:mace_omat
+```
+
+`mode: composition_scaling` takes one model and evaluates it on the input and
+on the output species of the transformed atoms, so the model must know every
+element of the `composition_scaling` block. With a universal MLIP
+any element it was trained on can be substituted.
 
 ---
 
