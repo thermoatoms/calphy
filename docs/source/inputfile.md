@@ -820,8 +820,9 @@ The engine that runs the molecular dynamics.
   swaps outside `composition_scaling` and the LAMMPS swap type numbers
   (`monte_carlo.forward_swap_types`/`reverse_swap_types`; the swap groups
   follow from the transformation), `md.cmdargs`/`md.init_commands`, a
-  pressure range, and an anisotropic
-  pressure. Settings left unset take thermotorch's defaults, which differ
+  pressure range, and `pressure_coupling: tri` (`iso` and `aniso` are
+  supported; `aniso` needs an orthogonal cell, which calphy's own hcp cell
+  is). Settings left unset take thermotorch's defaults, which differ
   from calphy's in two deliberate places: the structural checks of
   `tolerance` (`solid_fraction`, `liquid_fraction`) are on,
   and the pressure convergence uses a standard-error test (see

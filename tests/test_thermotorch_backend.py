@@ -69,7 +69,6 @@ def test_unsupported_modes_are_refused(mode):
 
 def test_pressure_forms_thermotorch_cannot_run():
     assert "pscale" in error_of(pressure=[0, 1000])
-    assert "anisotropically" in error_of(pressure=[[0, 0, 0]])
     assert "fixed lattice" in error_of(pressure=None)
 
 
@@ -378,3 +377,22 @@ def test_composition_scaling_through_calphy_is_the_mass_term(tmp_path):
     assert report["results"]["mass_correction"] == pytest.approx(mass_term)
     assert report["input"]["concentration"].split() == ["0.9166666666666666",
                                                         "0.08333333333333333"]
+
+
+# --------------------------------------------------------------------------- #
+# pressure coupling
+# --------------------------------------------------------------------------- #
+def test_aniso_coupling_is_passed_on():
+    pytest.importorskip("thermotorch")
+    from calphy.thermotorch_backend import to_thermotorch_calculation
+
+    assert to_thermotorch_calculation(
+        build(pressure_coupling="aniso")).pressure_coupling == "aniso"
+    assert to_thermotorch_calculation(build()).pressure_coupling == "iso"
+    # calphy resolves a 3-component pressure to aniso
+    assert to_thermotorch_calculation(
+        build(pressure=[[0, 0, 0]])).pressure_coupling == "aniso"
+
+
+def test_triclinic_coupling_is_refused():
+    assert "pressure_coupling: 'tri'" in error_of(pressure_coupling="tri")

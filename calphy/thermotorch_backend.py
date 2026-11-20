@@ -99,7 +99,7 @@ ALLOWED_FIELDS = frozenset({
     # system and state point
     "element", "mass", "mode", "lattice", "file_format", "lattice_constant",
     "c_over_a", "repeat", "materials_project", "reference_phase",
-    "temperature", "temperature_high", "pressure",
+    "temperature", "temperature_high", "pressure", "pressure_coupling",
     # protocol
     "melting_cycle", "npt", "n_equilibration_steps", "n_switching_steps",
     "n_print_steps", "n_iterations", "spring_constants", "alchemy_coupling",
@@ -213,11 +213,16 @@ def check_calculation(calc):
                 "pressure: a [start, stop] pressure range is a pscale input; "
                 "thermotorch runs fe and ts at a single pressure"
             )
-        elif shape == (1, 3):
-            problems.append(
-                "pressure: a 3-component pressure couples the box "
-                "anisotropically; thermotorch's barostat is isotropic only"
-            )
+        # (1, 3): calphy resolves it to pressure_coupling "aniso", which
+        # thermotorch runs on an orthogonal cell
+
+    coupling = calc.pressure_coupling
+    if coupling is not None and str(coupling).lower() == "tri":
+        problems.append(
+            "pressure_coupling: 'tri' (triclinic) is not available -- "
+            "thermotorch's anisotropic barostat needs an orthogonal cell; use "
+            "'aniso'"
+        )
 
     if problems:
         raise ValueError(
@@ -238,8 +243,6 @@ def _why_refused(field):
     if field in ("nose_hoover", "berendsen", "equilibration_control",
                  "quantum_thermal_bath"):
         return "thermotorch uses a Langevin thermostat and barostat throughout"
-    if field == "pressure_coupling":
-        return "thermotorch's barostat is isotropic only"
     return "has no thermotorch equivalent"
 
 
@@ -465,6 +468,9 @@ def to_thermotorch_calculation(calc, seed=None):
         "lattice": calc.lattice,
         "reference_phase": calc.reference_phase,
         "pressure": float(calc._pressure),
+        # calphy's resolved coupling: the explicit key, else "aniso" for a
+        # 3-component pressure and "iso" otherwise
+        "pressure_coupling": calc._pressure_coupling,
     }
     if calc.mode == "ts":
         data["temperature"] = [float(calc._temperature), float(calc._temperature_stop)]
