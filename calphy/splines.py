@@ -2,32 +2,25 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany 
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL). 
-calphy is distributed in the hope that it will be useful for non-commercial academic research, 
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details. 
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
-
-
-The splines are from:
-
-# Supplemental Material for The Uhlenbeck-Ford model: Exact virial coefficients and application as a reference system in fluid-phase free-energy calculationsâ€
-# Authors: Rodolfo Paula Leite(1), Rodrigo Freitas(2), Rodolfo Azevedo(3), and Maurice de Koning(1)
-# 1 - Instituto de FiÌsica "Gleb Wataghin", Universidade Estadual de Campinas, UNICAMP, 13083-859, Campinas, SaÌƒo Paulo, Brazil
-# 2 - Department of Materials Science and Engineering, University of California, Berkeley, CA 94720, U.S.A.
-# 3 - Instituto de ComputacÌ§aÌƒo, Universidade Estadual de Campinas, UNICAMP, 13083-852, Campinas, SaÌƒo Paulo, Brazil
+sarath.menon@ruhr-uni-bochum.de
 """
  
 spline1  = [[-14.175243817292000, 1.036718109543200, 1.000000000000000, 0.000000000000000],

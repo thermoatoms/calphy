@@ -2,34 +2,34 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 import re
 import numpy as np
 import os
 import random
-import pyscal3.core as pc
 from mendeleev import element
 from ase.io import read, write
 from ase.atoms import Atoms
-from pyscal3.core import element_dict
 from calphy.integrators import kb
 
 
@@ -161,9 +161,9 @@ class CompositionTransformation:
         entropy_term = kb * np.sum(ents)
         return entropy_term
 
-    def convert_to_pyscal(self):
+    def read_structure(self):
         """
-        Convert a given system to pyscal and give a dict of type mappings
+        Read the input structure and set up the element <-> type mappings
         """
         # Create Z_of_type mapping to properly read LAMMPS data files
         # This ensures atoms are correctly identified by their element
@@ -176,20 +176,19 @@ class CompositionTransformation:
         aseobj = read(
             self.calc.lattice, format="lammps-data", style="atomic", Z_of_type=Z_of_type
         )
-        pstruct = pc.System(aseobj, format="ase")
 
         # here we have to validate the input composition dict; and map it
-        typelist = pstruct.atoms.species
+        typelist = aseobj.get_chemical_symbols()
         types, typecounts = np.unique(typelist, return_counts=True)
         composition = {types[x]: typecounts[x] for x in range(len(types))}
 
         atomsymbols = self.calc.element
         atomtypes = [x + 1 for x in range(len(self.calc.element))]
 
-        self.pyscal_structure = pstruct
+        self.structure = aseobj
         self.typedict = dict(zip(atomsymbols, atomtypes))
         self.reversetypedict = dict(zip(atomtypes, atomsymbols))
-        self.natoms = self.pyscal_structure.natoms
+        self.natoms = len(self.structure)
 
         # Count of actual unique atom types present in the structure
         # This matches what's declared in the LAMMPS data file header
@@ -237,8 +236,9 @@ class CompositionTransformation:
             self.atom_mark.append(False)
 
         # Use species (element symbols) instead of numeric types
-        self.atom_species = self.pyscal_structure.atoms.species
-        self.atom_type = self.pyscal_structure.atoms.types
+        self.atom_species = self.structure.get_chemical_symbols()
+        # placeholder types; update_types assigns the mapping type of every atom
+        self.atom_type = [1] * self.natoms
         self.mappings = [f"{x}-{x}" for x in self.atom_species]
 
     def update_mark_atoms(self):
@@ -375,9 +375,6 @@ class CompositionTransformation:
         # Update atom_type based on mapping to new types
         for x in range(len(self.atom_type)):
             self.atom_type[x] = self.mappingdict[self.mappings[x]]
-
-        # Update pyscal structure types
-        self.pyscal_structure.atoms.types = self.atom_type
 
     def iselement(self, symbol):
         try:
@@ -580,9 +577,8 @@ class CompositionTransformation:
         from ase.io import write as ase_write
         from ase import Atoms as ASEAtoms
 
-        # Get positions and cell from pyscal structure
-        positions = self.pyscal_structure.atoms.positions
-        cell = self.pyscal_structure.box
+        positions = self.structure.positions
+        cell = self.structure.cell
 
         # Build per-atom type numbers and chemical symbols.
         # for_fe_mode: remap each atom to its TARGET element's typedict entry so
@@ -596,8 +592,8 @@ class CompositionTransformation:
             invert_typedict = {v: k for k, v in self.typedict.items()}
             symbols = [invert_typedict[t] for t in fe_types]
         else:
-            fe_types = None  # will use pyscal types below
-            symbols = [self.reversetypedict[t] for t in self.pyscal_structure.atoms.types]
+            fe_types = None  # will use the mapping types below
+            symbols = [self.reversetypedict[t] for t in self.atom_type]
 
         ase_atoms = ASEAtoms(symbols=symbols, positions=positions, cell=cell, pbc=True)
 
@@ -609,7 +605,7 @@ class CompositionTransformation:
             lines = f.readlines()
 
         # Choose which per-atom type list to use
-        atom_types_to_write = fe_types if for_fe_mode else list(self.pyscal_structure.atoms.types)
+        atom_types_to_write = fe_types if for_fe_mode else list(self.atom_type)
 
         # Find the Atoms section and replace type numbers
         # Support different ASE formats: "Atoms # atomic", "Atoms # full", or just "Atoms"
@@ -633,7 +629,7 @@ class CompositionTransformation:
                         break
 
         # Verify all atoms were updated
-        expected_atoms = len(self.pyscal_structure.atoms.types)
+        expected_atoms = len(self.atom_type)
         if atom_idx != expected_atoms:
             raise RuntimeError(
                 f"Failed to update all atoms in {outfilename}. "
@@ -664,7 +660,7 @@ class CompositionTransformation:
         self.unique_mappings = []
 
         self.get_composition_transformation()
-        self.convert_to_pyscal()
+        self.read_structure()
 
         self.mark_atoms()
         self.update_mark_atoms()

@@ -1,3 +1,27 @@
+"""
+calphy: a Python library and command line interface for automated free
+energy calculations.
+
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
+
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
+
+More information about the program can be found in:
+Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
+DOI: 10.1103/PhysRevMaterials.5.103801
+
+For more information contact:
+sarath.menon@ruhr-uni-bochum.de
+"""
 import os
 import numpy as np
 import shutil
@@ -7,118 +31,8 @@ import yaml
 import time
 import datetime
 
-from calphy.input import read_inputfile, load_job, save_job, _convert_legacy_inputfile
-from calphy.liquid import Liquid
-from calphy.solid import Solid
-from calphy.alchemy import Alchemy
+from calphy.input import read_inputfile
 from calphy.phase_diagram import prepare_inputs_for_phase_diagram
-
-def _generate_job(calc, simfolder):
-    if calc.mode == "alchemy" or calc.mode == "composition_scaling":
-        job = Alchemy(calculation=calc, simfolder=simfolder)
-        return job
-    else:
-        if calc.reference_phase == "liquid":
-            job = Liquid(calculation=calc, simfolder=simfolder)
-            return job
-        else:
-            job = Solid(calculation=calc, simfolder=simfolder)
-            return job
-
-
-def run_averaging():
-    arg = ap.ArgumentParser()
-    arg.add_argument("-i", "--input", required=True, type=str,
-    help="name of the input file")
-    arg.add_argument("-k", "--kernel", required=True, type=int, 
-    help="kernel number of the calculation to be run.")
-    args = vars(arg.parse_args())
-    kernel = args["kernel"]
-    calculations = read_inputfile(args["input"])
-    calc = calculations[kernel]
-
-    simfolder = calc.create_folders()
-    job = _generate_job(calc, simfolder)
-    os.chdir(simfolder)
-    
-
-    job.run_averaging()
-    save_job(job)
-
-
-def process_averaging():
-    arg = ap.ArgumentParser()
-    arg.add_argument("-i", "--input", required=True, type=str,
-    help="name of the input file")
-    arg.add_argument("-k", "--kernel", required=True, type=int, 
-    help="kernel number of the calculation to be run.")
-    args = vars(arg.parse_args())
-    kernel = args["kernel"]
-    calculations = read_inputfile(args["input"])
-    calc = calculations[kernel]
-
-    job = load_job(calc.savefile)
-    job.process_averaging_results()
-    save_job(job)
-
-def run_integration():
-    arg = ap.ArgumentParser()
-    arg.add_argument("-i", "--input", required=True, type=str,
-    help="name of the input file")
-    arg.add_argument("-k", "--kernel", required=True, type=int, 
-    help="kernel number of the calculation to be run.")
-    args = vars(arg.parse_args())
-    kernel = args["kernel"]
-    calculations = read_inputfile(args["input"])
-    calc = calculations[kernel]
-
-    job = load_job(calc.savefile)
-    job.run_integration()
-    save_job(job)
-
-def process_integration():
-    arg = ap.ArgumentParser()
-    arg.add_argument("-i", "--input", required=True, type=str,
-    help="name of the input file")
-    arg.add_argument("-k", "--kernel", required=True, type=int, 
-    help="kernel number of the calculation to be run.")
-    args = vars(arg.parse_args())
-    kernel = args["kernel"]
-    calculations = read_inputfile(args["input"])
-    calc = calculations[kernel]
-
-    job = load_job(calc.savefile)
-    job.thermodynamic_integration()
-    job.submit_report()
-    save_job(job)
-
-def convert_legacy_inputfile():
-    arg = ap.ArgumentParser()
-    arg.add_argument("-i", "--input", required=True, type=str,
-    help="name of the input file")
-    arg.add_argument("-s", "--split", required=False, type=bool, 
-    help="split each calculation into new file.", default=True)
-    arg.add_argument("-o", "--output", required=False, type=str, 
-    help="output file string, calculations will be named <outputstring>.*.yaml", 
-        default='input')    
-    args = vars(arg.parse_args())
-    calculations = _convert_legacy_inputfile(args['input'], return_calcs=True)
-    outputstr = args['output']
-
-    if args['split']:
-        #now we have to write this out to file
-        for count, calc in enumerate(calculations):
-            data = {}
-            data['calculations'] = [calc]
-            outfile = ".".join([outputstr, str(count+1), 'yaml'])
-            with open(outfile, 'w') as fout:
-                yaml.safe_dump(data, fout)
-    else:
-        data = {}        
-        data['calculations'] = calculations
-        outfile = ".".join([outputstr, 'yaml'])
-        with open(outfile, 'w') as fout:
-            yaml.safe_dump(data, fout)
 
 
 def phase_diagram():

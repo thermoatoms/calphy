@@ -2,23 +2,25 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 import copy
@@ -37,6 +39,48 @@ import calphy.helpers as ph
 from calphy.liquid import Liquid
 from calphy.solid import Solid
 from calphy.composition_transformation import CompositionTransformation
+
+
+def enable_phase_detection(calc, logger, mode, solid_fraction=0.7, liquid_fraction=0.05):
+    """
+    Switch the structural melt/solidify checks on in a raw calculation dict
+    unless the user set them explicitly.
+
+    The shipped defaults (``tolerance.solid_fraction = 0``,
+    ``tolerance.liquid_fraction = 1``) make both checks unreachable.  Modes
+    that build a solid and a liquid cell and depend on each staying in its
+    phase (``melting_temperature``, ``dcci``) turn them on for their
+    sub-calculations only.
+
+    Parameters
+    ----------
+    calc : dict
+        Raw sub-calculation dict, mutated in place before it is parsed.
+    logger : logging.Logger
+        Where the warning about the changed default goes.
+    mode : str
+        Name of the calling mode, for the log message.
+    solid_fraction, liquid_fraction : float
+        Thresholds to install when the user gave none.
+    """
+    tolerance = calc.setdefault("tolerance", {})
+    if not isinstance(tolerance, dict):
+        return
+    if tolerance.get("solid_fraction") is None:
+        tolerance["solid_fraction"] = solid_fraction
+        logger.warning(
+            "mode %s: enabling melt detection with tolerance.solid_fraction = %g "
+            "(the default of 0 makes the check unreachable). Set "
+            "tolerance.solid_fraction explicitly to override." % (mode, solid_fraction)
+        )
+    if tolerance.get("liquid_fraction") is None:
+        tolerance["liquid_fraction"] = liquid_fraction
+        logger.warning(
+            "mode %s: enabling solidification detection with "
+            "tolerance.liquid_fraction = %g (the default of 1 makes the check "
+            "unreachable). Set tolerance.liquid_fraction explicitly to override."
+            % (mode, liquid_fraction)
+        )
 
 
 class MeltingTemp:
@@ -71,6 +115,40 @@ class MeltingTemp:
         logfile = os.path.join(os.getcwd(), f"{self.calc.create_identifier()}.log")
         self.logger = ph.prepare_log(logfile, screen=log_to_screen)
 
+    # Values used when melting_temperature has to switch the structural
+    # phase-stability checks back on for its sub-calculations.
+    DETECTION_SOLID_FRACTION = 0.7
+    DETECTION_LIQUID_FRACTION = 0.05
+
+    def _enable_phase_detection(self, calc):
+        """
+        Force the structural phase-stability checks on for a sub-calculation.
+
+        ``run_jobs`` signals "solid melted" / "liquid froze" purely through
+        MeltedError / SolidifiedError, and ``start_calculation`` walks the
+        temperature bracket on those signals alone.  The measured solid
+        fraction is bounded to [0, 1], so the shipped defaults
+        (``solid_fraction = 0``, ``liquid_fraction = 1``) make both checks
+        unreachable -- the bracket would never be corrected and Tm would be
+        reported without ever verifying that the solid stayed solid and the
+        liquid stayed liquid.
+
+        The checks are therefore enabled here for this mode only, leaving the
+        global defaults alone.  An explicit user setting is always respected.
+
+        Parameters
+        ----------
+        calc : dict
+            Raw sub-calculation dict, mutated in place before it is parsed.
+        """
+        enable_phase_detection(
+            calc,
+            self.logger,
+            "melting_temperature",
+            self.DETECTION_SOLID_FRACTION,
+            self.DETECTION_LIQUID_FRACTION,
+        )
+
     def prepare_calcs(self):
         """
         Prepare calculations list from given object
@@ -101,6 +179,7 @@ class MeltingTemp:
             calc["n_iterations"] = data["calculations"][int(self.calc.kernel)][
                 "n_iterations"
             ]
+        self._enable_phase_detection(calc)
         calculations["calculations"].append(calc)
 
         with open(self.calc.inputfile, "r") as fin:
@@ -115,6 +194,7 @@ class MeltingTemp:
             calc["n_iterations"] = data["calculations"][int(self.calc.kernel)][
                 "n_iterations"
             ]
+        self._enable_phase_detection(calc)
         calculations["calculations"].append(calc)
 
         outfile = f"{self.calc.create_identifier()}.{self.attempts}.yaml"
@@ -191,7 +271,8 @@ class MeltingTemp:
         self.logger.info("Starting solid reversible scaling run")
         for i in range(self.soljob.calc.n_iterations):
             try:
-                self.soljob.reversible_scaling(iteration=(i + 1))
+                with self.soljob:
+                    self.soljob.reversible_scaling(iteration=(i + 1))
             except MeltedError:
                 self.logger.info("Solid system melted during reversible scaling run")
                 return 2
@@ -210,7 +291,8 @@ class MeltingTemp:
         self.logger.info("Starting liquid reversible scaling calculation")
         for i in range(self.lqdjob.calc.n_iterations):
             try:
-                self.lqdjob.reversible_scaling(iteration=(i + 1))
+                with self.lqdjob:
+                    self.lqdjob.reversible_scaling(iteration=(i + 1))
             except SolidifiedError:
                 self.logger.info("Liquid froze during reversible scaling calculation")
                 return 3
@@ -218,6 +300,38 @@ class MeltingTemp:
         self.lqdres = self.lqdjob.integrate_reversible_scaling(
             scale_energy=True, return_values=True
         )
+
+        self._report_sweep_quality()
+
+    def _report_sweep_quality(self):
+        """
+        Repeat any dissipation warning from the two sub-calculations here.
+
+        The solid and liquid sweeps log into their own simfolders, which nobody
+        reads when the point of the mode is a single number at the end.  A
+        sweep that dissipated heavily produces a free energy that is wrong by
+        an amount no averaging removes, and the crossing of two such curves is
+        wrong with it -- so the warning has to reach the melting-temperature
+        log, where it will actually be seen.
+        """
+        offenders = [
+            (job.calc.reference_phase, job.ediss)
+            for job in (self.soljob, self.lqdjob)
+            if getattr(job, "ediss_high", False)
+        ]
+        if not offenders:
+            return
+        detail = ", ".join(
+            "%s %.3e eV/atom" % (phase, value) for phase, value in offenders
+        )
+        self.logger.warning(
+            "Melting temperature is being extrapolated from a sweep that did "
+            "not stay reversible (%s; tolerance.dissipation = %.3e). The phase "
+            "very likely changed during the sweep, so treat the reported Tm as "
+            "unreliable rather than as an answer -- see the warnings in the "
+            "sub-calculation logs." % (detail, self.calc.tolerance.dissipation)
+        )
+        self.logger.warning("STATE: Tm unreliable, sweep dissipation too high")
 
     def start_calculation(self):
         """
@@ -285,6 +399,68 @@ class MeltingTemp:
         self.logger.info("STATE: Predicted Tm from extrapolation: %f K" % tpred)
         return tpred
 
+    # Half-width of the finite-difference stencil used to take the local
+    # dF/dT on either side of the crossing, in samples.  Capped against the
+    # sweep length so a short sweep cannot index past either end.
+    CROSSING_STENCIL = 50
+
+    def _crossing_error(self, arg, suberr):
+        """
+        Propagate the free-energy uncertainty at the crossing into an
+        uncertainty on Tm.
+
+        The two curves cross at index ``arg``; converting a free-energy error
+        into a temperature error needs the rate at which they separate there,
+        i.e. the difference of their local slopes.  That slope is taken from a
+        symmetric finite difference around ``arg``.
+
+        The stencil is clamped to the array: ``find_tm`` only rejects
+        ``arg == 0`` and ``arg == len - 1``, so a crossing near either end
+        would otherwise read ``arg + 50`` past the end (IndexError, raised in
+        postprocessing after all the MD has been paid for) or ``arg - 50`` as
+        a negative index, which numpy silently wraps to the far end of the
+        sweep and turns the local slope into a chord across the whole
+        temperature range.
+
+        Parameters
+        ----------
+        arg : int
+            Index of the crossing.
+        suberr : float
+            Combined free-energy uncertainty at the crossing, in eV/atom.
+
+        Returns
+        -------
+        tmerr : float
+            Uncertainty on Tm in K, or ``np.nan`` if the local slopes are too
+            close to distinguish (parallel curves give no crossing scale).
+        """
+        n = len(self.solres[1])
+        half = max(1, min(self.CROSSING_STENCIL, n // 20))
+        lo = max(arg - half, 0)
+        hi = min(arg + half, n - 1)
+        if hi <= lo:
+            self.logger.warning(
+                "Sweep has too few samples (%d) to estimate a slope at the "
+                "crossing; reporting Tm without an error estimate." % n
+            )
+            return np.nan
+
+        def _slope(res):
+            dt = res[0][hi] - res[0][lo]
+            if dt == 0:
+                return np.nan
+            return (res[1][hi] - res[1][lo]) / dt
+
+        slope_diff = _slope(self.solres) - _slope(self.lqdres)
+        if not np.isfinite(slope_diff) or slope_diff == 0:
+            self.logger.warning(
+                "Solid and liquid free-energy curves are parallel at the "
+                "crossing; reporting Tm without an error estimate."
+            )
+            return np.nan
+        return suberr / slope_diff
+
     def find_tm(self):
         """
         Find melting temperature
@@ -327,15 +503,7 @@ class MeltingTemp:
                 self.calc_tm = self.solres[0][arg]
                 # get errors
                 suberr = np.sqrt(self.solres[2][arg] ** 2 + self.lqdres[2][arg] ** 2)
-                sol_slope = (self.solres[1][arg + 50] - self.solres[1][arg - 50]) / (
-                    self.solres[0][arg + 50] - self.solres[0][arg - 50]
-                )
-                lqd_slope = (self.lqdres[1][arg + 50] - self.lqdres[1][arg - 50]) / (
-                    self.lqdres[0][arg + 50] - self.lqdres[0][arg - 50]
-                )
-                slope_diff = sol_slope - lqd_slope
-                tmerr = suberr / slope_diff
-                self.tmerr = tmerr
+                self.tmerr = self._crossing_error(arg, suberr)
                 return self.calc_tm, self.tmerr
 
             self.attempts += 1
@@ -360,15 +528,19 @@ def routine_fe(job):
     """
     Perform an FE calculation routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run_fe()
     ts = time.time()
-    job.run_averaging()
+    with job:
+        job.run_averaging()
     te = time.time() - ts
     job.logger.info("Averaging routine finished in %f s" % te)
 
     # now run integration loops
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.run_integration(iteration=(i + 1))
+        with job:
+            job.run_integration(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("Integration cycle %d finished in %f s" % (i + 1, te))
 
@@ -382,6 +554,8 @@ def routine_ts(job):
     """
     Perform ts routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run_ts()
     routine_fe(job)
 
     # Optional pre-flight temperature-range scan: run a fast real-thermostat
@@ -390,14 +564,16 @@ def routine_ts(job):
     # in the single-phase region.  Disabled by default (mode='none').
     if job.calc.phase_transition_detection.mode != "none":
         ts = time.time()
-        job.scan_temperature_range()
+        with job:
+            job.scan_temperature_range()
         te = time.time() - ts
         job.logger.info("Pre-flight temperature-range scan finished in %f s" % te)
 
     # now do rev scale steps
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.reversible_scaling(iteration=(i + 1))
+        with job:
+            job.reversible_scaling(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("TS integration cycle %d finished in %f s" % (i + 1, te))
 
@@ -415,7 +591,8 @@ def routine_tscale(job):
     # now do rev scale steps
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.temperature_scaling(iteration=(i + 1))
+        with job:
+            job.temperature_scaling(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("Temperature scaling cycle %d finished in %f s" % (i + 1, te))
 
@@ -433,7 +610,8 @@ def routine_pscale(job):
     # now do rev scale steps
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.pressure_scaling(iteration=(i + 1))
+        with job:
+            job.pressure_scaling(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("Pressure scaling cycle %d finished in %f s" % (i + 1, te))
 
@@ -446,15 +624,19 @@ def routine_alchemy(job):
     """
     Perform an FE calculation routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
     ts = time.time()
-    job.run_averaging()
+    with job:
+        job.run_averaging()
     te = time.time() - ts
     job.logger.info("Averaging routine finished in %f s" % te)
 
     # now run integration loops
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.run_integration(iteration=(i + 1))
+        with job:
+            job.run_integration(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("Alchemy integration cycle %d finished in %f s" % (i + 1, te))
 
@@ -464,10 +646,54 @@ def routine_alchemy(job):
     return job
 
 
+def set_composition_scaling_potential(calc, comp):
+    """
+    Rewrite the pair lists of a composition_scaling calculation into the two
+    end states the alchemy driver switches between.
+
+    A plain potential contributes its single component; with
+    ``pair_mode: overlay`` every component of the overlay is carried along.
+    The pair_coeff of each component is mapped once onto the input types
+    (the element list before the transformation) and once onto the output
+    types, and the lists become ``[initial_1 .. initial_N, final_1 ..
+    final_N]`` with the pair styles repeated to match.
+
+    Parameters
+    ----------
+    calc : Calculation
+        the calculation, modified in place
+    comp : CompositionTransformation
+        the transformation providing ``update_pair_coeff``
+
+    Returns
+    -------
+    n_components : int
+        number of components in each end state
+    """
+    n_components = len(calc.pair_style) if ph.is_overlay_potential(calc) else 1
+    styles = list(calc.pair_style[:n_components])
+    styles_with_options = list(calc._pair_style_with_options[:n_components])
+    names = list(calc._pair_style_names[:n_components])
+
+    initial, final = [], []
+    for pair_coeff in calc.pair_coeff[:n_components]:
+        pc_initial, pc_final = comp.update_pair_coeff(pair_coeff)
+        initial.append(pc_initial)
+        final.append(pc_final)
+
+    calc.pair_style = styles + styles
+    calc._pair_style_with_options = styles_with_options + styles_with_options
+    calc._pair_style_names = names + names
+    calc.pair_coeff = initial + final
+    return n_components
+
+
 def routine_composition_scaling(job):
     """
     Perform a compositional scaling routine
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
     # we set up comp scaling first
     job.logger.info("Calculating composition scaling")
     comp = CompositionTransformation(job.calc)
@@ -479,19 +705,16 @@ def routine_composition_scaling(job):
     job.logger.info(f"Forward swap types: {forward_swap_types}")
     job.logger.info(f"Reverse swap types: {reverse_swap_types}")
 
-    # update pair styles
-    res = comp.update_pair_coeff(job.calc.pair_coeff[0])
-    job.calc.pair_style.append(job.calc.pair_style[0])
-    job.calc._pair_style_with_options.append(job.calc._pair_style_with_options[0])
-    job.calc.pair_coeff[0] = res[0]
-    job.calc.pair_coeff.append(res[1])
-    job.logger.info("Update pair coefficients")
-    job.logger.info(f"pair coeff 1: {job.calc.pair_coeff[0]}")
-    job.logger.info(f"pair coeff 2: {job.calc.pair_coeff[1]}")
-    job.calc._pair_style_names.append(job.calc._pair_style_names[0])
-    job.logger.info("Update pair styles")
-    job.logger.info(f"pair style 1: {job.calc._pair_style_names[0]}")
-    job.logger.info(f"pair style 2: {job.calc._pair_style_names[1]}")
+    # rewrite the potential into its initial and final composition
+    n_components = set_composition_scaling_potential(job.calc, comp)
+    job.logger.info("Update pair styles and coefficients")
+    for idx in range(2 * n_components):
+        end = "initial" if idx < n_components else "final"
+        job.logger.info(
+            f"{end} component {idx % n_components + 1}: "
+            f"pair_style {job.calc._pair_style_with_options[idx]} | "
+            f"pair_coeff {job.calc.pair_coeff[idx]}"
+        )
 
     backup_element = job.calc.element.copy()
     job.calc.element = comp.pair_list_old
@@ -537,14 +760,16 @@ def routine_composition_scaling(job):
 
     # now start cycle
     ts = time.time()
-    job.run_averaging()
+    with job:
+        job.run_averaging()
     te = time.time() - ts
     job.logger.info("Averaging routine finished in %f s" % te)
 
     # now run integration loops
     for i in range(job.calc.n_iterations):
         ts = time.time()
-        job.run_integration(iteration=(i + 1))
+        with job:
+            job.run_integration(iteration=(i + 1))
         te = time.time() - ts
         job.logger.info("Alchemy integration cycle %d finished in %f s" % (i + 1, te))
 
@@ -558,6 +783,25 @@ def routine_composition_scaling(job):
     mcorsum = job.mass_integration(ref_mass, target_masses, target_counts)
 
     job.fe = job.fe - mcorsum
+
+    # Restore the original element list so that submit_report writes the
+    # correct element names (e.g. 'Pd Cu') instead of the pair_list_old
+    # mapping (e.g. 'Pd Pd') that was needed during the LAMMPS integration.
+    job.calc.element = backup_element
+
+    # Update _element_dict to reflect the output composition so that
+    # report.yaml records the target concentrations rather than the input
+    # structure's composition (which is typically a pure element).
+    output_comp = job.calc.composition_scaling.output_chemical_composition
+    total_atoms = sum(output_comp.values())
+    for el in backup_element:
+        if el in output_comp:
+            job.calc._element_dict[el]["count"] = output_comp[el]
+            job.calc._element_dict[el]["composition"] = output_comp[el] / total_atoms
+        else:
+            job.calc._element_dict[el]["count"] = 0
+            job.calc._element_dict[el]["composition"] = 0.0
+
     job.submit_report(
         extra_dict={
             "results": {

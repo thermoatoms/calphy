@@ -2,29 +2,32 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 from typing_extensions import Annotated
 from typing import Any, Callable, Dict, List, ClassVar, Literal, Optional, Union
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     ValidationError,
     model_validator,
@@ -32,6 +35,7 @@ from pydantic import (
     conlist,
     PrivateAttr,
 )
+import difflib
 from pydantic.functional_validators import AfterValidator, BeforeValidator
 from annotated_types import Len
 import mendeleev
@@ -44,12 +48,17 @@ import datetime
 import itertools
 import os
 import warnings
-from pyscal3 import System
-from pyscal3.core import structure_dict, element_dict, _make_crystal
 from ase.io import read, write
 import shutil
 
-__version__ = "1.8.5"
+from calphy.structures import (
+    BUILTIN_LATTICES,
+    canonical_lattice,
+    default_lattice,
+    make_lattice,
+)
+
+__version__ = "2.3.1"
 
 
 def _check_equal(val):
@@ -59,6 +68,10 @@ def _check_equal(val):
 
 
 def to_list(v: Any) -> List[Any]:
+    # None stays None, so an optional list field (pair_style, pair_coeff)
+    # dumped as null reads back as unset rather than as [None]
+    if v is None:
+        return None
     return np.atleast_1d(v)
 
 
@@ -135,7 +148,92 @@ def _extract_elements_from_pair_coeff(pair_coeff_string):
     return elements if len(elements) > 0 else None
 
 
-class UFMP(BaseModel, title="UFM potential input options"):
+# --------------------------------------------------------------------------- #
+# Strict input models: unknown keys are hard errors, with hints.
+# A typo in an input key must never silently fall back to a default.
+# --------------------------------------------------------------------------- #
+
+#: input keys that existed in calphy v1, with their migration message
+_REMOVED_KEYS = {
+    "savefile": "job-state pickling was removed in calphy v2; rerun from the input file",
+    "save_job": "job-state pickling was removed in calphy v2; rerun from the input file",
+    "load_job": "job-state pickling was removed in calphy v2; rerun from the input file",
+    "seed": "use md.seed -- one master seed now controls every stochastic step "
+            "(the old quantum_thermal_bath seed was never actually applied)",
+    "lambda_schedule": "was removed in calphy 2.2.1; reversible scaling always "
+                       "ramps lambda linearly, as in de Koning et al., since only "
+                       "then does the barostat follow the scaled pressure lambda*P "
+                       "exactly (uniform_temperature only changed the sampling "
+                       "density, not the free energy)",
+}
+
+#: lazily built: ({field name -> [locations]}, {model class -> location label})
+_INPUT_LAYOUT = None
+
+
+def _input_layout():
+    """Map every input field to the block(s) it lives in.
+
+    Built lazily on the first unknown-key error, once every model below is
+    defined.  Nested blocks are discovered from Calculation's fields whose
+    defaults are input models, so new blocks are picked up automatically.
+    """
+    global _INPUT_LAYOUT
+    if _INPUT_LAYOUT is None:
+        field_locs = {}
+        model_locs = {Calculation: "the calculation block"}
+        for name, field in Calculation.model_fields.items():
+            field_locs.setdefault(name, []).append("the calculation block")
+            if isinstance(field.default, _StrictInput):
+                block_cls = type(field.default)
+                model_locs[block_cls] = "the '%s:' block" % name
+                for fname in block_cls.model_fields:
+                    field_locs.setdefault(fname, []).append("the '%s:' block" % name)
+        _INPUT_LAYOUT = (field_locs, model_locs)
+    return _INPUT_LAYOUT
+
+
+def _unknown_key_message(cls, key):
+    """One error line for unknown ``key`` on model ``cls``, with the best hint."""
+    if key in _REMOVED_KEYS:
+        return "input key '%s': %s" % (key, _REMOVED_KEYS[key])
+    field_locs, model_locs = _input_layout()
+    here = model_locs.get(cls, "the '%s' block" % cls.__name__)
+    msg = "unknown input key '%s' in %s" % (key, here)
+    close = difflib.get_close_matches(key, cls.model_fields.keys(), n=1)
+    if close:
+        return "%s -- did you mean '%s'?" % (msg, close[0])
+    if key in field_locs:  # right key, wrong block
+        return "%s -- '%s' belongs in %s" % (msg, key, field_locs[key][0])
+    close = difflib.get_close_matches(key, field_locs.keys(), n=1, cutoff=0.75)
+    if close:
+        return "%s -- did you mean '%s' (in %s)?" % (
+            msg, close[0], field_locs[close[0]][0],
+        )
+    return msg
+
+
+class _StrictInput(BaseModel):
+    """Base class for every input block: unknown keys raise, with hints."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_keys(cls, data):
+        if isinstance(data, dict):
+            unknown = [
+                k for k in data
+                if isinstance(k, str) and k not in cls.model_fields
+            ]
+            if unknown:
+                raise ValueError(
+                    "; ".join(_unknown_key_message(cls, k) for k in unknown)
+                )
+        return data
+
+
+class UFMP(_StrictInput, title="UFM potential input options"):
     p: Annotated[float, Field(default=50.0)]
     # sigma may be a scalar (single-component UFM reference, original behaviour) or a
     # mapping of per-element-pair length scales for the two-leg UFM reference path, e.g.
@@ -154,7 +252,7 @@ class UFMP(BaseModel, title="UFM potential input options"):
 
 
 class MonteCarlo(
-    BaseModel, title="Options for Monte Carlo moves during particle swap moves"
+    _StrictInput, title="Options for Monte Carlo moves during particle swap moves"
 ):
     n_steps: Annotated[
         int, Field(default=1, gt=0, description="perform swap moves every n_step")
@@ -186,7 +284,7 @@ class MonteCarlo(
     ]
 
 
-class CompositionScaling(BaseModel, title="Composition scaling input options"):
+class CompositionScaling(_StrictInput, title="Composition scaling input options"):
     _input_chemical_composition: PrivateAttr(default=None)
     output_chemical_composition: Annotated[dict, Field(default={}, required=False)]
     restrictions: Annotated[
@@ -194,7 +292,7 @@ class CompositionScaling(BaseModel, title="Composition scaling input options"):
     ]
 
 
-class MD(BaseModel, title="MD specific input options"):
+class MD(_StrictInput, title="MD specific input options"):
     timestep: Annotated[
         float,
         Field(
@@ -207,29 +305,34 @@ class MD(BaseModel, title="MD specific input options"):
     n_every_steps: Annotated[int, Field(default=10, gt=0)]
     n_repeat_steps: Annotated[int, Field(default=10, gt=0)]
     n_cycles: Annotated[int, Field(default=100, gt=0)]
-    thermostat_damping: Annotated[
-        Union[float, conlist(float, min_length=2, max_length=2)],
-        Field(default=0.1, gt=0),
-    ]
-    barostat_damping: Annotated[
-        Union[float, conlist(float, min_length=2, max_length=2)],
-        Field(default=0.1, gt=0),
-    ]
+    # scalar in the input file (the integration-stage damping); Phase.__init__
+    # rewrites these at runtime into [equilibration, integration] pairs, with
+    # the equilibration value taken from the nose_hoover/berendsen/qtb block.
+    # (The former Union[float, 2-list] input form never validated -- gt broke
+    # the list branch -- and the drivers never handled a user-given list.)
+    thermostat_damping: Annotated[float, Field(default=0.1, gt=0)]
+    barostat_damping: Annotated[float, Field(default=0.1, gt=0)]
     cmdargs: Annotated[str, Field(default="")]
     init_commands: Annotated[List, Field(default=[])]
+    # master seed for every stochastic choice a job makes: velocity creation,
+    # langevin/atom-swap/qtb fix seeds, composition-scaling atom picks. None
+    # (the default) draws a fresh seed per run; the seed actually used is
+    # always backfilled into the simfolder copy of the input file, so any run
+    # can be reproduced exactly by rerunning that file.
+    seed: Annotated[Optional[int], Field(default=None, gt=0)]
 
 
-class NoseHoover(BaseModel, title="Specific input options for Nose-Hoover thermostat"):
+class NoseHoover(_StrictInput, title="Specific input options for Nose-Hoover thermostat"):
     thermostat_damping: Annotated[float, Field(default=0.1, gt=0)]
     barostat_damping: Annotated[float, Field(default=0.1, gt=0)]
 
 
-class Berendsen(BaseModel, title="Specific input options for Berendsen thermostat"):
+class Berendsen(_StrictInput, title="Specific input options for Berendsen thermostat"):
     thermostat_damping: Annotated[float, Field(default=100.0, gt=0)]
     barostat_damping: Annotated[float, Field(default=100.0, gt=0)]
 
 
-class QuantumThermalBath(BaseModel, title="Dammak quantum thermal bath (LAMMPS fix qtb)"):
+class QuantumThermalBath(_StrictInput, title="Dammak quantum thermal bath (LAMMPS fix qtb)"):
     """
     Colored-noise Langevin thermostat that injects quantum statistics into
     classical MD (Dammak et al., Phys. Rev. Lett. 103, 190601, 2009).
@@ -244,10 +347,9 @@ class QuantumThermalBath(BaseModel, title="Dammak quantum thermal bath (LAMMPS f
                     "Must exceed the highest phonon frequency of the system.")]
     n_f: Annotated[int, Field(default=100, gt=0,
         description="Number of frequency bins discretising the QTB spectrum.")]
-    seed: Annotated[int, Field(default=880302, gt=0)]
 
 
-class Queue(BaseModel, title="Options for configuring queue"):
+class Queue(_StrictInput, title="Options for configuring queue"):
     scheduler: Annotated[str, Field(default="local")]
     cores: Annotated[int, Field(default=1, gt=0)]
     jobname: Annotated[str, Field(default="calphy")]
@@ -258,21 +360,37 @@ class Queue(BaseModel, title="Options for configuring queue"):
     options: Annotated[Dict[str, str], Field(default={})]
 
 
-class Tolerance(BaseModel, title="Tolerance settings for convergence"):
+class Tolerance(_StrictInput, title="Tolerance settings for convergence"):
     lattice_constant: Annotated[float, Field(default=0.0002, ge=0)]
     spring_constant: Annotated[float, Field(default=0.1, gt=0)]
-    # Structural phase-stability checks during equilibration are OFF by
-    # default: solid_fraction=0 means the melt check (solid_fraction < this)
-    # never fires, and liquid_fraction=1.0 means the solidify check
-    # (solid_fraction > this) never fires.  Set solid_fraction > 0 (e.g. 0.7)
-    # to re-enable melt detection for a solid run, or liquid_fraction < 1
-    # (e.g. 0.05) to re-enable solidification detection for a liquid run.
+    # Structural phase-stability checks during equilibration.  The melt check
+    # fires when the measured solid fraction drops below solid_fraction; the
+    # solidify check fires when it rises above liquid_fraction.  Because the
+    # fraction is bounded to [0, 1], solid_fraction=0 makes the melt check
+    # unreachable and liquid_fraction=1 makes the solidify check unreachable
+    # -- that is how each check is disabled, and both are OFF by default.
+    #
+    # Phase.__init__ logs a warning whenever the check relevant to a run's
+    # reference phase is disabled.  mode "melting_temperature" is the one
+    # exception: its temperature bracket is advanced only by the resulting
+    # MeltedError/SolidifiedError, so MeltingTemp re-enables them (see
+    # MeltingTemp._enable_phase_detection) rather than report an unvalidated
+    # Tm.  Set solid_fraction > 0 (e.g. 0.7) or liquid_fraction < 1
+    # (e.g. 0.05) to enable them for any other mode.
     solid_fraction: Annotated[float, Field(default=0.0, ge=0)]
     liquid_fraction: Annotated[float, Field(default=1.0, ge=0)]
+    # Irreversible work per atom above which a switching path is called into
+    # question, in eV/atom; 0 disables the check.  Dissipation enters the free
+    # energy directly, so for a melting point it converts to a temperature
+    # error of roughly dissipation / dS_fus -- at a typical dS_fus of ~1.2 kB
+    # the default of 1 meV/atom is about 10 K.  A clean sweep sits one to two
+    # orders of magnitude below it; a sweep whose structure changed partway
+    # (the forward and backward integrals then cannot match) sits well above.
+    dissipation: Annotated[float, Field(default=0.001, ge=0)]
     pressure: Annotated[float, Field(default=10.0, ge=0)]
 
 
-class PhaseTransitionDetection(BaseModel, title="Settings for the pre-flight temperature-range scan"):
+class PhaseTransitionDetection(_StrictInput, title="Settings for the pre-flight temperature-range scan"):
     mode: Annotated[
         Literal["none", "adapt", "warn", "stop"],
         Field(
@@ -348,13 +466,93 @@ class PhaseTransitionDetection(BaseModel, title="Settings for the pre-flight tem
     # onset_level overlapped with onset_fraction.  Users tune the scan through
     # mode, prescan_steps and onset_fraction only.
 
-class MeltingTemperature(BaseModel, title="Input options for melting temperature mode"):
+class MeltingTemperature(_StrictInput, title="Input options for melting temperature mode"):
     guess: Annotated[Union[float, None], Field(default=None, gt=0)]
     step: Annotated[int, Field(default=200, ge=20)]
     attempts: Annotated[int, Field(default=5, ge=1)]
 
 
-class MaterialsProject(BaseModel, title="Input options for materials project"):
+class DynamicClausiusClapeyron(
+    _StrictInput, title="Input options for dynamic Clausius-Clapeyron integration"
+):
+    """Settings of ``mode: dcci`` (de Koning, Antonelli, Yip, J. Chem. Phys. 115,
+    11025 (2001)).  The coexistence line is traced from the known point
+    (``temperature``, ``pressure[0]``) to ``pressure[1]`` in blocks of
+    ``n_block_steps`` MD steps, during which the scaled pressure of both cells
+    is ramped and lambda = T0/T is updated from the block averages of U and V."""
+
+    n_block_steps: Annotated[
+        int,
+        Field(
+            default=1000,
+            ge=1,
+            description=(
+                "MD steps per integration block: the pressure step of the "
+                "Clausius-Clapeyron integration, and in execution_mode "
+                "executable one lmp launch per block per cell.  Smaller blocks "
+                "follow the line more finely; the block averages get noisier."
+            ),
+        ),
+    ]
+    integrator: Annotated[
+        Literal["euler", "trapezoid"],
+        Field(
+            default="euler",
+            description=(
+                "Corrector applied after each block: 'euler' uses the slope of "
+                "the finished block, 'trapezoid' the mean of the last two."
+            ),
+        ),
+    ]
+    stop_at_target_pressure: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=(
+                "End the sweep at the first block whose real pressure reaches "
+                "pressure[1] (the ramp is applied to the scaled pressure, which "
+                "the real pressure runs ahead of when the line has a positive "
+                "slope).  If False the sweep runs its full length."
+            ),
+        ),
+    ]
+    n_check_blocks: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description=(
+                "Run the solid-fraction melt/freeze checks on both cells every "
+                "this many blocks; 0 checks only at the end of each sweep."
+            ),
+        ),
+    ]
+    hysteresis_tolerance: Annotated[
+        float,
+        Field(
+            default=5.0,
+            ge=0,
+            description=(
+                "K.  Flag the result when the backward sweep misses the starting "
+                "temperature at pressure[0] by more than this."
+            ),
+        ),
+    ]
+    parallel_cells: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Run the solid and the liquid cell at the same time, each with "
+                "half of queue.cores, instead of one after the other with all of "
+                "them.  Halves the wall time of the sweeps; needs queue.cores >= 2 "
+                "(with a single core the cells run sequentially)."
+            ),
+        ),
+    ]
+
+
+class MaterialsProject(_StrictInput, title="Input options for materials project"):
     api_key: Annotated[str, Field(default="", exclude=True)]
     conventional: Annotated[bool, Field(default=True)]
     target_natoms: Annotated[
@@ -378,7 +576,34 @@ class MaterialsProject(BaseModel, title="Input options for materials project"):
         return value
 
 
-class Calculation(BaseModel, title="Main input class"):
+class TorchModel(_StrictInput, title="Torch model for engine thermotorch"):
+    """The potential for ``engine: thermotorch``: any callable returning a torch-sim model.
+
+    ``name`` is its full import path (``package.module.attribute``,
+    ``package.module:attribute`` or ``path/to/file.py:attribute``); it is
+    called with ``kwargs``, plus ``device`` and ``dtype`` when it has
+    parameters of those names.  See :mod:`calphy.thermotorch_backend`.
+    """
+
+    name: Annotated[str, Field(default="")]
+    kwargs: Annotated[Dict[str, Any], Field(default={})]
+    device: Annotated[Optional[str], Field(default=None)]
+    precision: Annotated[Literal["float64", "float32"], Field(default="float64")]
+
+
+class ThermotorchOptions(_StrictInput, title="Settings only engine thermotorch has"):
+    """Unset values take thermotorch's defaults."""
+
+    # "sem" (thermotorch's default) or "calphy" (calphy's own test)
+    pressure_convergence: Annotated[
+        Optional[Literal["sem", "calphy"]], Field(default=None)
+    ]
+    melt_t_factor: Annotated[Optional[float], Field(default=None, gt=1.0)]
+    n_melt_steps: Annotated[Optional[int], Field(default=None, gt=0)]
+    cell_damping: Annotated[Optional[float], Field(default=None, gt=0)]
+
+
+class Calculation(_StrictInput, title="Main input class"):
     monte_carlo: Optional[MonteCarlo] = MonteCarlo()
     composition_scaling: Optional[CompositionScaling] = CompositionScaling()
     md: Optional[MD] = MD()
@@ -390,6 +615,7 @@ class Calculation(BaseModel, title="Main input class"):
     phase_transition_detection: Optional[PhaseTransitionDetection] = PhaseTransitionDetection()
     uhlenbeck_ford_model: Optional[UFMP] = UFMP()
     melting_temperature: Optional[MeltingTemperature] = MeltingTemperature()
+    dcci: Optional[DynamicClausiusClapeyron] = DynamicClausiusClapeyron()
     materials_project: Optional[MaterialsProject] = MaterialsProject()
 
     element: Annotated[List[str], BeforeValidator(to_list), Field(default=[])]
@@ -456,11 +682,21 @@ class Calculation(BaseModel, title="Main input class"):
 
     reference_phase: Annotated[str, Field(default="")]
     lattice_constant: Annotated[float, Field(default=0)]
+    # c/a of the built-in hcp lattice; None gives the ideal sqrt(8/3)
+    c_over_a: Annotated[Union[float, None], Field(default=None, gt=0)]
     repeat: Annotated[
         conlist(int, min_length=3, max_length=3), Field(default=[1, 1, 1])
     ]
 
     script_mode: Annotated[bool, Field(default=False)]
+    # "lammps" (default) or "thermotorch": run fe/ts on a torch-native
+    # potential through thermotorch instead of LAMMPS (calphy.thermotorch_backend)
+    engine: Annotated[str, Field(default="lammps")]
+    # one model; for mode alchemy two: [initial, final], or [base, added]
+    # with alchemy_coupling
+    model: Optional[Union[TorchModel, List[TorchModel]]] = None
+    thermotorch: Optional[ThermotorchOptions] = None
+    execution_mode: Annotated[str, Field(default="executable")]
     lammps_executable: Annotated[Union[str, None], Field(default=None)]
     mpi_executable: Annotated[Union[str, None], Field(default=None)]
 
@@ -473,8 +709,9 @@ class Calculation(BaseModel, title="Main input class"):
     _n_switching_steps: int = PrivateAttr(default=50000)
     _n_sweep_steps: int = PrivateAttr(default=50000)
     n_print_steps: Annotated[int, Field(default=0)]
+    n_print_steps_equilibration: Annotated[int, Field(default=0)]
+    alchemy_coupling: Annotated[bool, Field(default=False)]
     n_iterations: Annotated[int, Field(default=1)]
-    lambda_schedule: Annotated[str, Field(default="linear")]
     equilibration_control: Annotated[Union[str, None], Field(default=None)]
     folder_prefix: Annotated[Union[str, None], Field(default=None)]
 
@@ -498,6 +735,45 @@ class Calculation(BaseModel, title="Main input class"):
 
     @model_validator(mode="after")
     def _validate_all(self) -> "Input":
+        if self.script_mode:
+            raise ValueError(
+                "script_mode was removed in calphy v2. calphy now always drives "
+                "the LAMMPS executable directly; set lammps_executable (or use "
+                "$CALPHY_LAMMPS_EXECUTABLE / lmp on PATH) and remove script_mode "
+                "from the input file."
+            )
+
+        if self.engine not in ("lammps", "thermotorch"):
+            raise ValueError(
+                "engine must be 'lammps' (the default) or 'thermotorch', got %r"
+                % self.engine
+            )
+        if self.engine == "thermotorch":
+            # before anything below changes a field: refuses every setting
+            # thermotorch cannot honour, comparing against the defaults
+            from calphy.thermotorch_backend import check_calculation
+
+            check_calculation(self)
+        else:
+            for key in ("model", "thermotorch"):
+                if getattr(self, key) is not None:
+                    raise ValueError(
+                        "%s is only used with engine: thermotorch" % key
+                    )
+            if self.pair_style is None or self.pair_coeff is None:
+                raise ValueError(
+                    "pair_style and pair_coeff are required (or set engine: "
+                    "thermotorch and give a torch model)"
+                )
+
+        if self.execution_mode not in ("executable", "library"):
+            raise ValueError(
+                "execution_mode must be 'executable' (drive the lmp binary, "
+                "the default) or 'library' (drive LAMMPS through pylammpsmpi; "
+                "needs the optional dependency: pip install calphy[library]), "
+                "got %r" % self.execution_mode
+            )
+
         if not (len(self.element) == len(self.mass)):
             raise ValueError("mass and elements should have same length")
 
@@ -528,12 +804,6 @@ class Calculation(BaseModel, title="Main input class"):
             if self.pair_mode not in ["overlay"]:
                 raise ValueError("pair_mode should be one of: overlay")
 
-        self.lambda_schedule = self.lambda_schedule.lower()
-        if self.lambda_schedule not in ["linear", "uniform_temperature"]:
-            raise ValueError(
-                "lambda_schedule must be one of: 'linear', 'uniform_temperature'"
-            )
-
         if self.pair_mode == "overlay":
             if self.pair_style is None or self.pair_coeff is None:
                 raise ValueError("pair_mode overlay requires pair_style and pair_coeff")
@@ -546,16 +816,38 @@ class Calculation(BaseModel, title="Main input class"):
                     raise ValueError(
                         "pair_mode overlay expects component pair styles, not a hybrid pair_style"
                     )
+            if self.mode == "alchemy" and not self.alchemy_coupling:
+                raise ValueError(
+                    "pair_mode overlay is not supported for mode alchemy: the two "
+                    "pair_style/pair_coeff entries are the potential switched from "
+                    "and the potential switched to. To change the composition of an "
+                    "overlay potential use mode composition_scaling."
+                )
+
+        # the components that make up the physical potential: every entry for
+        # an overlay, otherwise only the first one is used
+        if self.pair_coeff is not None and self.pair_mode == "overlay":
+            potential_pair_coeffs = list(self.pair_coeff)
+        elif self.pair_coeff is not None and len(self.pair_coeff) > 0:
+            potential_pair_coeffs = [self.pair_coeff[0]]
+        else:
+            potential_pair_coeffs = []
+
+        if self.mode == "composition_scaling":
+            # composition scaling renumbers the atom types, so a pair_coeff
+            # tied to explicit type numbers would address the wrong atoms
+            for pc in potential_pair_coeffs:
+                if pc.split()[:2] != ["*", "*"]:
+                    raise ValueError(
+                        "mode composition_scaling needs every pair_coeff to apply to "
+                        f"all atom types ('* * ...'); got: {pc}"
+                    )
 
         # Validate element/mass/pair_coeff ordering consistency
         # This is critical for multi-element systems where LAMMPS type numbers
         # are assigned based on element order: element[0]=Type1, element[1]=Type2, etc.
-        if (
-            len(self.element) > 1
-            and self.pair_coeff is not None
-            and len(self.pair_coeff) > 0
-        ):
-            extracted_elements = _extract_elements_from_pair_coeff(self.pair_coeff[0])
+        for potential_pair_coeff in potential_pair_coeffs if len(self.element) > 1 else []:
+            extracted_elements = _extract_elements_from_pair_coeff(potential_pair_coeff)
 
             if extracted_elements is not None:
                 # pair_coeff specifies elements - check ordering
@@ -690,7 +982,7 @@ class Calculation(BaseModel, title="Main input class"):
 
         _pair_style_names = []
 
-        for ps in self.pair_style:
+        for ps in self.pair_style or []:
             ps_split = ps.split()
             _pair_style_names.append(ps_split[0])
 
@@ -699,7 +991,7 @@ class Calculation(BaseModel, title="Main input class"):
         self._pair_style_names = _pair_style_names
 
         # now fix pair coeffs with path
-        if self.fix_potential_path:
+        if self.fix_potential_path and self.pair_coeff is not None:
             self.pair_coeff = self.fix_paths(self.pair_coeff)
 
         if np.isscalar(self.n_switching_steps):
@@ -708,6 +1000,9 @@ class Calculation(BaseModel, title="Main input class"):
         else:
             self._n_sweep_steps = self.n_switching_steps[1]
             self._n_switching_steps = self.n_switching_steps[0]
+
+        if self.mode == "dcci":
+            self._validate_dcci()
 
         # here we also prepare lattice dict
         for count, element in enumerate(self.element):
@@ -723,71 +1018,38 @@ class Calculation(BaseModel, title="Main input class"):
         write_structure_file = False
         rename_structure_file = False
 
-        if self.lattice == "":
-            # fetch from dict
+        if self.lattice == "" or canonical_lattice(self.lattice) is not None:
             if len(self.element) > 1:
                 raise ValueError(
                     "Cannot create lattice for more than one element, provide a lammps-data file explicitly"
                 )
-            if self.element[0] in element_dict.keys():
-                self.lattice = element_dict[self.element[0]]["structure"]
-                self.lattice_constant = element_dict[self.element[0]][
-                    "lattice_constant"
-                ]
-            else:
-                raise ValueError(
-                    "Could not find structure, please provide lattice and lattice_constant explicitely"
-                )
+            default = default_lattice(self.element[0])
 
-            if self.repeat == [1, 1, 1]:
-                self.repeat = [5, 5, 5]
-
-            structure = _make_crystal(
-                self.lattice.lower(),
-                lattice_constant=self.lattice_constant,
-                repetitions=self.repeat,
-                element=self.element,
-            )
-            structure = structure.write.ase()
-
-            # extract composition
-            types, typecounts = np.unique(
-                structure.get_chemical_symbols(), return_counts=True
-            )
-
-            for c, t in enumerate(types):
-                self._element_dict[t]["count"] = typecounts[c]
-                self._element_dict[t]["composition"] = typecounts[c] / np.sum(
-                    typecounts
-                )
-
-            self._natoms = len(structure)
-            self._original_lattice = self.lattice.lower()
-            write_structure_file = True
-
-        elif self.lattice.lower() in structure_dict.keys():
-            if len(self.element) > 1:
-                raise ValueError(
-                    "Cannot create lattice for more than one element, provide a lammps-data file explicitly"
-                )
-
-            # this is a valid structure
-            if self.lattice_constant == 0:
-                # we try try to get lattice_constant
-                if self.element[0] in element_dict.keys():
-                    self.lattice_constant = element_dict[self.element[0]][
-                        "lattice_constant"
-                    ]
-                else:
+            if self.lattice == "":
+                # ground-state lattice of the element
+                if default is None:
+                    raise ValueError(
+                        "Could not find structure, please provide lattice and lattice_constant explicitely"
+                    )
+                self.lattice, self.lattice_constant = default
+                if self.repeat == [1, 1, 1]:
+                    self.repeat = [5, 5, 5]
+            elif self.lattice_constant == 0:
+                if default is None:
                     raise ValueError("Please provide lattice_constant!")
-            # now create lattice
-            structure = _make_crystal(
-                self.lattice.lower(),
-                lattice_constant=self.lattice_constant,
-                repetitions=self.repeat,
-                element=self.element,
+                self.lattice_constant = default[1]
+
+            if self.c_over_a is not None and canonical_lattice(self.lattice) != "hcp":
+                raise ValueError(
+                    f"c_over_a only applies to the hcp lattice, not {self.lattice}"
+                )
+            structure = make_lattice(
+                self.lattice,
+                self.element[0],
+                self.lattice_constant,
+                self.repeat,
+                c_over_a=self.c_over_a,
             )
-            structure = structure.write.ase()
 
             # extract composition
             types, typecounts = np.unique(
@@ -800,13 +1062,12 @@ class Calculation(BaseModel, title="Main input class"):
                     typecounts
                 )
 
-            # concdict_counts = {str(t): typecounts[c] for c, t in enumerate(types)}
-            # concdict_frac = {str(t): typecounts[c]/np.sum(typecounts) for c, t in enumerate(types)}
-            # self._composition = concdict_frac
-            # self._composition_counts = concdict_counts
             self._natoms = len(structure)
-            self._original_lattice = self.lattice.lower()
+            self._original_lattice = canonical_lattice(self.lattice)
             write_structure_file = True
+
+        elif self.c_over_a is not None:
+            raise ValueError("c_over_a only applies to the built-in hcp lattice")
 
         elif self.lattice.split("-")[0] == "mp":
             # confirm here that API key exists
@@ -867,7 +1128,11 @@ class Calculation(BaseModel, title="Main input class"):
         else:
             # this is a file
             if not os.path.exists(self.lattice):
-                raise ValueError(f"File {self.lattice} could not be found")
+                raise ValueError(
+                    f"lattice '{self.lattice}' is neither a built-in lattice "
+                    f"({', '.join(BUILTIN_LATTICES)}), a materials project id "
+                    "nor an existing lammps-data file"
+                )
             if self.file_format == "lammps-data":
                 # create atomic numbers for proper reading
                 Z_of_type = dict(
@@ -953,6 +1218,42 @@ class Calculation(BaseModel, title="Main input class"):
                     f"Input and output number of atoms are not conserved! Input {self.composition_scaling._input_chemical_composition}, output {self.composition_scaling.output_chemical_composition}, total atoms in structure {len(structure)}"
                 )
         return self
+
+    def _validate_dcci(self):
+        """
+        Constraints of ``mode: dcci``: a known coexistence point and a pressure
+        range, one composition in both cells, no swaps.
+
+        ``temperature`` is the coexistence temperature at ``pressure[0]`` and
+        must be given explicitly (the mendeleev melting-point guess is not a
+        coexistence point of the potential).  ``reference_phase`` is forced to
+        ``solid``: the mode always builds one solid and one liquid cell, and the
+        value only enters the folder name.
+        """
+        if np.shape(self.pressure) != (2,):
+            raise ValueError(
+                "mode dcci needs pressure: [P_start, P_stop] in bar, the pressure "
+                "of the known coexistence point and the pressure to integrate "
+                "the coexistence line to; got %r" % (self._pressure_input,)
+            )
+        t_in = np.atleast_1d(self._temperature_input)
+        if np.shape(t_in) != (1,) or not t_in[0] > 0:
+            raise ValueError(
+                "mode dcci needs temperature: <T_coex>, the coexistence "
+                "temperature at pressure[0] in K (e.g. from a melting_temperature "
+                "calculation); got %r" % (self._temperature_input,)
+            )
+        if self.monte_carlo.n_swaps > 0:
+            raise ValueError(
+                "mode dcci does not support monte_carlo swaps: both cells must "
+                "keep the composition of the input structure"
+            )
+        if not self.npt:
+            raise ValueError("mode dcci integrates in the pressure-temperature plane and needs npt: True")
+        # the mode builds its own solid and liquid cells (each a sub-calculation
+        # carrying its phase here); on the parent the value only names the folder
+        if self.reference_phase not in ("solid", "liquid"):
+            self.reference_phase = "solid"
 
     def fix_paths(self, potlist):
         """
@@ -1094,21 +1395,6 @@ class Calculation(BaseModel, title="Main input class"):
         os.mkdir(simfolder)
         return simfolder
 
-    @property
-    def savefile(self):
-        simfolder = self.get_folder_name()
-        return os.path.join(simfolder, "job.npy")
-
-
-def save_job(job):
-    filename = os.path.join(job.simfolder, "job.npy")
-    np.save(filename, job)
-
-
-def load_job(filename):
-    job = np.load(filename, allow_pickle=True).flatten()[0]
-    return job
-
 
 def read_inputfile(file, validate=True):
     """Read input file and parse calculations.
@@ -1130,21 +1416,28 @@ def read_inputfile(file, validate=True):
     if not os.path.exists(file):
         raise FileNotFoundError(f"Input file {file} not found.")
 
-    with open(file, "r") as fin:
-        data = yaml.safe_load(fin)
-
-    if "element" in data.keys():
-        # old format
-        outfile = _convert_legacy_inputfile(file)
-    else:
-        outfile = file
-    calculations = _read_inputfile(outfile, validate=validate)
-    return calculations
+    return _read_inputfile(file, validate=validate)
 
 
 def _read_inputfile(file, validate=False):
     with open(file, "r") as fin:
         data = yaml.safe_load(fin)
+    if not isinstance(data, dict) or "calculations" not in data:
+        if isinstance(data, dict) and "element" in data:
+            raise ValueError(
+                "%s uses the legacy calphy input format (top-level keys "
+                "instead of a 'calculations:' list). Automatic conversion "
+                "was removed in calphy v2; convert the file once with an "
+                "older calphy (pip install 'calphy<2', then "
+                "calphy_convert_input) or restructure it by hand." % file
+            )
+        raise ValueError("%s has no 'calculations:' list" % file)
+    stray = [k for k in data if k != "calculations"]
+    if stray:
+        raise ValueError(
+            "unknown top-level key(s) %s in %s -- everything except "
+            "'calculations:' goes inside a calculation block" % (stray, file)
+        )
     calculations = []
     for count, calc in enumerate(tqdm(data["calculations"])):
         calc["kernel"] = count
@@ -1158,174 +1451,6 @@ def _read_inputfile(file, validate=False):
             # Skip expensive validation - for fast parsing
             calculations.append(Calculation.model_construct(**calc))
     return calculations
-
-
-def _convert_legacy_inputfile(file, return_calcs=False):
-    with open(file, "r") as fin:
-        data = yaml.safe_load(fin)
-    if not "element" in data.keys():
-        # new format
-        raise ValueError("Not old format, exiting..")
-
-    # prepare combos
-    calculations = []
-    for cc, ci in enumerate(data["calculations"]):
-        mode = ci["mode"]
-        if mode == "melting_temperature":
-            calc = {}
-            for key in [
-                "md",
-                "queue",
-                "tolerance",
-                "melting_temperature",
-                "nose_hoover",
-                "berendsen",
-                "composition_scaling",
-                "temperature_high",
-            ]:
-                if key in data.keys():
-                    calc[key] = copy.copy(data[key])
-            for key in [
-                "element",
-                "mass",
-                "script_mode",
-                "lammps_executable",
-                "mpi_executable",
-            ]:
-                if key in data.keys():
-                    calc[key] = data[key]
-            for key in [
-                "mode",
-                "pair_style",
-                "pair_coeff",
-                "pair_mode",
-                "pair_style_options",
-                "npt",
-                "repeat",
-                "n_equilibration_steps",
-                "n_switching_steps",
-                "n_print_steps",
-                "n_iterations",
-                "potential_file",
-                "spring_constants",
-                "melting_cycle",
-                "equilibration_control",
-                "folder_prefix",
-                "temperature_high",
-            ]:
-                if key in ci.keys():
-                    calc[key] = ci[key]
-
-            # calc['pressure'] = float(np.atleast_1d(ci["pressure"]) if "pressure" in ci.keys() else np.atleast_1d(0))
-            # calc['temperature'] = float(np.atleast_1d(ci["temperature"]) if "temperature" in ci.keys() else np.atleast_1d(0))
-            # calc['lattice'] = str(ci["lattice"]) if "lattice" in ci.keys() else 'none'
-            # calc['reference_phase'] = str(ci["reference_phase"]) if "reference_phase" in ci.keys() else 'none'
-            # calc['lattice_constant'] = float(ci["lattice_constant"]) if "lattice_constant" in ci.keys() else 0
-            calc["kernel"] = cc
-            calc["inputfile"] = file
-            calculations.append(calc)
-
-        else:
-            pressure = np.atleast_1d(ci["pressure"])
-            temperature = np.atleast_1d(ci["temperature"])
-            lattice = np.atleast_1d(ci["lattice"])
-            reference_phase = np.atleast_1d(ci["reference_phase"])
-            if "lattice_constant" in ci.keys():
-                lattice_constant = np.atleast_1d(ci["lattice_constant"])
-            else:
-                lattice_constant = [0 for x in range(len(lattice))]
-
-            lat_props = [
-                {
-                    "lattice": lattice[x],
-                    "lattice_constant": lattice_constant[x],
-                    "reference_phase": reference_phase[x],
-                }
-                for x in range(len(lattice))
-            ]
-
-            if (mode == "fe") or (mode == "alchemy") or (mode == "composition_scaling"):
-                combos = itertools.product(lat_props, pressure, temperature)
-            elif mode == "ts" or mode == "tscale":
-                if not len(temperature) == 2:
-                    raise ValueError("ts/tscale mode needs 2 temperature values")
-                temperature = [temperature]
-                combos = itertools.product(lat_props, pressure, temperature)
-            elif mode == "pscale":
-                if not len(pressure) == 2:
-                    raise ValueError("pscale mode needs 2 pressure values")
-                pressure = [pressure]
-                combos = itertools.product(lat_props, pressure, temperature)
-
-            cc = 0
-            for combo in combos:
-                calc = {}
-                for key in [
-                    "md",
-                    "queue",
-                    "tolerance",
-                    "melting_temperature",
-                    "nose_hoover",
-                    "berendsen",
-                    "composition_scaling",
-                    "temperature_high",
-                ]:
-                    if key in data.keys():
-                        calc[key] = copy.copy(data[key])
-                for key in [
-                    "element",
-                    "mass",
-                    "script_mode",
-                    "lammps_executable",
-                    "mpi_executable",
-                ]:
-                    if key in data.keys():
-                        calc[key] = data[key]
-                for key in [
-                    "mode",
-                    "pair_style",
-                    "pair_coeff",
-                    "pair_mode",
-                    "pair_style_options",
-                    "npt",
-                    "repeat",
-                    "n_equilibration_steps",
-                    "n_switching_steps",
-                    "n_print_steps",
-                    "n_iterations",
-                    "potential_file",
-                    "spring_constants",
-                    "melting_cycle",
-                    "equilibration_control",
-                    "folder_prefix",
-                    "temperature_high",
-                ]:
-                    if key in ci.keys():
-                        calc[key] = ci[key]
-                # print(combo)
-                calc["lattice"] = str(combo[0]["lattice"])
-                calc["lattice_constant"] = float(combo[0]["lattice_constant"])
-                calc["reference_phase"] = str(combo[0]["reference_phase"])
-                calc["pressure"] = _to_float(combo[1])
-                calc["temperature"] = _to_float(combo[2])
-                calc["kernel"] = cc
-                calc["inputfile"] = file
-                cc += 1
-                calculations.append(calc)
-
-    if return_calcs:
-        return calculations
-    else:
-        newdata = {}
-        newdata["calculations"] = calculations
-        # print(newdata)
-        outfile = "new." + file
-        warnings.warn(
-            f"Old style input file calphy < v2 found. Converted input in {outfile}. Please check!"
-        )
-        with open(outfile, "w") as fout:
-            yaml.safe_dump(newdata, fout)
-        return outfile
 
 
 def generate_metadata():

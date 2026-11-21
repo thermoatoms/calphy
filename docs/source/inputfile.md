@@ -15,6 +15,15 @@ calculations:
     key2: value2
 ```
 
+```{note}
+Input keys are validated strictly: an unrecognized key anywhere in the file is
+an error at startup, not silently ignored — a typo like `n_iteration` would
+otherwise silently run with the default `n_iterations`. The error message
+suggests the closest matching key and, when a key was placed in the wrong
+block (e.g. `timestep` at the calculation level instead of under `md:`),
+points at where it belongs.
+```
+
 
 ## `calculations`
 
@@ -41,11 +50,11 @@ calculations:
 ```
 ```{grid-item} [](lattice_constant)
 ```
+```{grid-item} [](c_over_a)
+```
 ```{grid-item} [](repeat)
 ```
 ```{grid-item} [](n_iterations)
-```
-```{grid-item} [](lambda_schedule)
 ```
 ```{grid-item} [](n_switching_steps)
 ```
@@ -73,7 +82,9 @@ calculations:
 ```
 ```{grid-item} [](folder_prefix)
 ```
-```{grid-item} [](script_mode)
+```{grid-item} [](engine)
+```
+```{grid-item} [](execution_mode)
 ```
 ```{grid-item} [](lammps_executable)
 ```
@@ -108,6 +119,8 @@ calculations:
 ```{grid-item} [](cmdargs)
 ```
 ```{grid-item} [](init_commands)
+```
+```{grid-item} [](md_seed)
 ```
 ```` 
 
@@ -158,6 +171,24 @@ calculations:
 ```{grid-item} [](step)
 ```
 ```{grid-item} [](attempts)
+```
+````
+
+### `dcci` 
+
+````{grid} 1 2 3 4
+:outline:
+```{grid-item} [](n_block_steps)
+```
+```{grid-item} [](integrator)
+```
+```{grid-item} [](stop_at_target_pressure)
+```
+```{grid-item} [](n_check_blocks)
+```
+```{grid-item} [](hysteresis_tolerance)
+```
+```{grid-item} [](parallel_cells)
 ```
 ````
 
@@ -247,8 +278,6 @@ calculations:
 ```
 ```{grid-item} [](qtb_n_f)
 ```
-```{grid-item} [](qtb_seed)
-```
 ````
 
 ### `phase_transition_detection`
@@ -316,7 +345,7 @@ Mass of the element(s) in the simulation. It should follow the same order as tha
 (mode)=
 #### `mode`  
 
-_type_: string, `fe` or `fe-qtb` or `ts` or `alchemy` or `melting_temperature` or `tscale` or `pscale` or `composition_scaling` \
+_type_: string, `fe` or `fe-qtb` or `ts` or `alchemy` or `melting_temperature` or `dcci` or `tscale` or `pscale` or `composition_scaling` \
 _default_: None \
 _example_:
 ```
@@ -331,6 +360,7 @@ Calculation mode. A small description of the different modes are given below.
 - `ts` performs a direct free energy calculation followed by reversible scaling to find temperature dependence.
 - `alchemy` is used for switching between two different interatomic potentials, or for integration over concentration. 
 - `melting_temperature` can be used for automated calculation of melting temperature. 
+- `dcci` traces a solid-liquid coexistence line in the pressure-temperature plane from one known coexistence point by dynamic Clausius-Clapeyron integration (de Koning, Antonelli and Yip, J. Chem. Phys. 115, 11025 (2001)). See the [`dcci`](dcci_block) block.
 - `tscale` is used for similar purpose as `ts`, but scales the temperature directly.
 - `pscale` calculates the free energy as a function of the pressure.
 - `composition_scaling` performs integration over composition.
@@ -351,6 +381,7 @@ temperature: [1200, 1300]
 Temperatures for the simulation in Kelvin. The way temperature is used in `calphy` depends on the selected mode of calculation. 
 - mode `ts` or `tscale`, a temperature sweep is carried out. In that case, only two values of temperature should be specified.
 - mode `melting_temperature`, if provided it is used as an initial guess temperature. If not, the experimental melting temperature is used as a guess value.
+- mode `dcci`, the coexistence temperature at `pressure[0]` in Kelvin, e.g. the result of a `melting_temperature` calculation at that pressure. It must be given explicitly.
 - all other modes, a calculation is launched for each temperature on the list.
 
 ---
@@ -377,10 +408,12 @@ Pressure for the simulation in bars. Depending on the pressure input, other opti
 | `None` | `pressure: None` | True | True | `fe`, `alchemy` | None |
 | scalar | `pressure: 100` | True | False | all except `pscale` | None |
 | `(1,)` | `pressure: [100]` | True | False | all except `pscale` | None |
-| `(2,)` | `pressure: [100, 200]` | True | False | `pscale` | None |
+| `(2,)` | `pressure: [100, 200]` | True | False | `pscale`, `dcci` | None |
 | `(3,)` | `pressure: [100, 100, 100]` | False | False | all except `pscale` | px=py=pz |
 | `(1,3)` | `pressure: [[100, 100, 100]]` | False | False | all except `pscale` | px=py=pz |
 | `(2,3)` | `pressure: [[100, 100, 100], [200, 200, 200]]` | False | False | `pscale` | px=py=pz |
+
+For mode `dcci`, `pressure[0]` is the pressure of the known coexistence point and `pressure[1]` the pressure the coexistence line is integrated to.
 
 ---
 
@@ -413,49 +446,64 @@ For triclinic systems, provide a LAMMPS data file as the `lattice` input and set
 (lattice)=
 #### `lattice`
 
-_type_: string or list of strings \
+_type_: string \
 _default_: None \
 _example_:
 ```
 lattice: FCC
-lattice: [FCC, conf.data]
+lattice: conf.data
 ```
    
-Lattice to be used for the calculations. The `lattice` option supports three forms:
+Lattice to be used for the calculation. The `lattice` option supports three forms:
 
-- A built-in unit cell name: one of `bcc`, `fcc`, `hcp`, `diamond`, or `sc`. calphy will build the cell with [pyscal3](https://pyscal.org/) using `lattice_constant` and `repeat`. **Single-species only.**
+- A built-in unit cell name: one of `fcc`, `bcc`, `hcp`, `diamond`, `simple_cubic` (or `sc`) and `a15` (the single-element A15, β-W, structure); case does not matter. calphy builds the cell with [ASE](https://wiki.fysik.dtu.dk/ase/) using `lattice_constant` and `repeat`, in an orthogonal box: the conventional cubic cell, or for `hcp` the 4-atom orthorhombic cell with edges a, √3 a and c (see [](c_over_a)). **Single-species only.**
 - A path to a LAMMPS data file (`file_format: lammps-data`). This is the preferred form for multi-element systems and for triclinic cells.
 - A [Materials Project](https://materialsproject.org/) ID, e.g. `mp-30`. The structure is fetched via `mp_api` and replicated to roughly `materials_project.target_natoms`. Requires the [`materials_project`](mp_api_key) block to be configured.
+
+If `lattice` is left out for a single-element calculation, calphy uses the element's ground-state lattice and lattice constant from ASE's reference data (`ase.data.reference_states`, e.g. fcc 3.61 Å for Cu, bcc 3.16 Å for W), with `repeat` defaulting to `[5, 5, 5]`. This only works for elements whose reference state is one of the built-in lattices.
 
 ---
 
 (reference_phase)=
 #### `reference_phase`         
    
-_type_: string or list of strings \
+_type_: string \
 _default_: None \
 _example_:
 ```
-state: solid
-state: [solid, liquid]
+reference_phase: solid
+reference_phase: liquid
 ```
 
-The protocol to be used for the calculation. The `reference_phase` input is closely related to the `lattice` command. It should be of the same length as the `lattice` input. For each of the lattice specified, `reference_phase` command specifies which reference state to use.
+The reference state used for the calculation of the structure given by [](lattice): `solid` (Einstein crystal) or `liquid` (Uhlenbeck-Ford model).
 
 ---
 
 (lattice_constant)=
 #### `lattice_constant`
 
-_type_: float or list of floats \
-_default_: experimental lattice constant \
+_type_: float \
+_default_: 0 (use the element's reference lattice constant) \
 _example_:
 ```
 lattice_constant: 3.68
-lattice_constant: [3.68, 5.43]
 ```
 
-Lattice constant for input structures. Lattice constant values to be used for initial structure creation. Only required if the structure lattice is specified. If not specified, experimental lattice constant is used.
+Lattice constant a, in Å, of a built-in [](lattice). Left at 0, calphy takes the element's lattice constant from ASE's reference data (`ase.data.reference_states`), which only exists if the element's reference state is a built-in lattice. If `lattice` is left out, the reference lattice constant is always used and `lattice_constant` is ignored. Not used for structure files or Materials Project structures.
+
+---
+
+(c_over_a)=
+#### `c_over_a`
+
+_type_: float \
+_default_: None (ideal c/a, √(8/3) ≈ 1.633) \
+_example_:
+```
+c_over_a: 1.856
+```
+
+c/a ratio of the built-in `hcp` lattice, used both for `lattice: hcp` and when `lattice` is left out for an element whose ground state is hcp. Setting it for any other lattice, a structure file or a Materials Project ID is an error.
 
 ---
 
@@ -469,7 +517,7 @@ _example_:
 repeat: [3,3,3]
 ```
 
-`repeat` command specifies the number of unit cells required in each x, y and z directions. This is only used if structure lattice is specified.
+Number of unit cells along x, y and z for a built-in [](lattice) (`[5, 5, 5]` if `lattice` is left out and `repeat` is not set), or the number of repetitions of a Materials Project structure (with the default `[1, 1, 1]`, it is repeated to about `materials_project.target_natoms` atoms). Not used for structure files.
 
 ---
 
@@ -483,26 +531,10 @@ _example_:
 n_iterations: 3
 ```
 
-The number of backward and forward integrations to be carried out in all modes. If more than one integration cycle is used, the errors can also be evaluated.
+The number of backward and forward integrations to be carried out in all modes. If more than one integration cycle is used, the errors can also be evaluated. The reported uncertainty is the standard error of the mean over these iterations, written as `error` in `report.yaml` — see [](outputfiles).
 
 ---
 
-(lambda_schedule)=
-#### `lambda_schedule`
-
-_type_: str \
-_default_: `linear` \
-_example_:
-```
-lambda_schedule: uniform_temperature
-```
-
-Controls how the scaling parameter λ is swept during reversible-scaling (`ts` mode) calculations. Two options are available:
-
-- **`linear`** (default): λ ramps linearly between the start and end values using LAMMPS `ramp()`. This is the original behaviour.
-- **`uniform_temperature`**: λ is chosen so that the equivalent reference temperature T₀/λ advances **linearly in MD steps**, giving a uniform number of samples per Kelvin across the sweep. This prevents the high-temperature end of the sweep from being under-sampled when the temperature range is large.
-
----
 
 (temperature_high)=
 #### `temperature_high`
@@ -584,7 +616,7 @@ pair_coeff:
   - "* * eam/alloy /path/to/myfile elt1 elt2"
 ```
 
-Set `pair_mode: overlay` to combine multiple component pair styles as a single physical potential using LAMMPS `hybrid/overlay`. The `pair_style` values should be the component styles, not the full `hybrid/overlay` command. The `pair_coeff` values may either include the component style name, as in native LAMMPS hybrid syntax, or omit it when the list order matches `pair_style`. In liquid free-energy integration and reversible scaling, calphy flattens this overlay into `hybrid/scaled` so all real-potential components are scaled together.
+Set `pair_mode: overlay` to combine multiple component pair styles as a single physical potential using LAMMPS `hybrid/overlay`. The `pair_style` values should be the component styles, not the full `hybrid/overlay` command. The `pair_coeff` values may either include the component style name, as in native LAMMPS hybrid syntax, or omit it when the list order matches `pair_style`. In liquid free-energy integration and reversible scaling, calphy flattens this overlay into `hybrid/scaled` so all real-potential components are scaled together. In mode `composition_scaling` the `pair_coeff` of every component is rewritten to the input and to the output composition, and all components are switched together. `pair_mode: overlay` cannot be combined with mode `alchemy`, where the two `pair_style` entries are the two ends of the transformation.
 
 ---
 
@@ -645,6 +677,8 @@ n_equilibration_steps: 10000
 ```
 
 The number of time steps for equilibrating the system.
+
+The full length is used wherever the system has to reach a new state: the reversible-scaling equilibration at `T0` under the COM-constrained thermostat, the middle equilibration at the far end of a temperature sweep, and the equilibrations of the `tscale` and `pscale` modes. Blocks that only re-thermalise an already equilibrated configuration are run as short warm starts of ten thermostat (or barostat) relaxation times instead, capped at `n_equilibration_steps`: the start of the reversible-scaling forward sweep, the first block of each `fe` integration cycle, and, for the solid, the equilibration at the Einstein-crystal end of the cycle, which `fix ti/spring` requires to have the same length as the first block. With the default damping of 0.1 ps and a 1 fs timestep these blocks are 1000 steps. Successive `fe` iterations start from the configuration the previous backward leg ended in (`conf.fe.backward_<n>.data`), so they remain decorrelated without a long equilibration.
 
 ---
 
@@ -745,16 +779,83 @@ Prefix string to be added to folder names for calculation. Folders for calculati
 (script_mode)=
 #### `script_mode`        
 
-_type_: bool \
-_default_: False \
+**Removed in calphy v2.** calphy now always drives the LAMMPS executable
+directly (segmented, restart-continued runs), so there is no separate
+script/library mode to select. Setting `script_mode: True` in an input file
+raises a validation error; remove the key. To point calphy at a specific binary,
+use [`lammps_executable`](lammps_executable) (and [`mpi_executable`](mpi_executable)
+for parallel runs) — these now apply to **every** mode and reference phase.
+
+
+---
+
+(engine)=
+#### `engine`
+
+_type_: string \
+_default_: lammps \
 _example_:
 ```
-script_mode: False
-```  
+engine: thermotorch
+```
 
-If True, a LAMMPS executable script is written and executed instead of the library interface of LAMMPS.
-Works only with `reference_phase: solid`, and `mode: fe`.
-Needs specification of [`lammps_executable`](lammps_executable) and [`mpi_executable`](mpi_executable).
+The engine that runs the molecular dynamics.
+
+- `lammps` (default): LAMMPS, with the potential given by
+  [`pair_style`](pair_style) / [`pair_coeff`](pair_coeff).
+- `thermotorch`: runs modes `fe`, `ts`, `alchemy` (including
+  `alchemy_coupling`) and `composition_scaling` (including label swaps) on any
+  torch-native potential
+  (MACE, GRACE, NequIP, ...) through
+  [thermotorch](https://github.com/thermoatoms/thermotorch), which re-hosts
+  calphy's protocols on [torch-sim](https://github.com/Radical-AI/torch-sim)
+  and writes the same output files, so the results are post-processed the same
+  way. The potential is given in the [`model`](model-block) block;
+  thermotorch-only settings go in the [`thermotorch`](thermotorch-block)
+  block. Needs `pip install git+https://github.com/thermoatoms/thermotorch`.
+
+  Settings thermotorch cannot honour are refused when the input is read, not
+  ignored: other modes, `pair_style`/`pair_coeff`, the LAMMPS execution keys,
+  the `nose_hoover`/`berendsen`/`quantum_thermal_bath` blocks, Monte Carlo
+  swaps outside `composition_scaling` and the LAMMPS swap type numbers
+  (`monte_carlo.forward_swap_types`/`reverse_swap_types`; the swap groups
+  follow from the transformation), `md.cmdargs`/`md.init_commands`, a
+  pressure range, and `pressure_coupling: tri` (`iso` and `aniso` are
+  supported; `aniso` needs an orthogonal cell, which calphy's own hcp cell
+  is). Settings left unset take thermotorch's defaults, which differ
+  from calphy's in two deliberate places: the structural checks of
+  `tolerance` (`solid_fraction`, `liquid_fraction`) are on,
+  and the pressure convergence uses a standard-error test (see
+  [`pressure_convergence`](tt_pressure_convergence)). The values actually
+  used are written to `input_file.yaml` in the simulation folder, and
+  `report.yaml` gains an `engine` block recording the model, the package
+  versions and the seed.
+
+---
+
+(execution_mode)=
+#### `execution_mode`
+
+_type_: string \
+_default_: executable \
+_example_:
+```
+execution_mode: library
+```
+
+Selects the backend calphy uses to drive LAMMPS. Both backends emit the exact
+same command stream; only the transport differs.
+
+- `executable` (default): runs the `lmp` binary as a subprocess in segmented,
+  restart-continued runs. Uses [`lammps_executable`](lammps_executable) /
+  [`mpi_executable`](mpi_executable) to find the binaries.
+- `library`: drives a live in-memory LAMMPS session through
+  [pylammpsmpi](https://github.com/pyiron/pylammpsmpi). Requires the optional
+  dependency (`pip install calphy[library]`) plus LAMMPS compiled as a Python
+  library — see [the library backend](library-backend) for setup instructions.
+  `lammps_executable`, `mpi_executable`, and the preflight capability check do
+  not apply; parallel runs use `queue.cores` through pylammpsmpi's own MPI
+  machinery.
 
 
 ---
@@ -766,12 +867,17 @@ _type_: string \
 _default_: None \
 _example_:
 ```
-lammps_executable: lmp_mpi
+lammps_executable: /path/to/lmp
 ```  
 
-LAMMPS executable to run the calculations with.
-Works only with `reference_phase: solid`, and `mode: fe`.
-Works only if [`script_mode`](script_mode) is `True`.
+The LAMMPS `lmp` binary calphy runs. Applies to every mode and reference phase.
+If not set, calphy resolves the binary in this order:
+
+1. this `lammps_executable` key,
+2. the environment variable `$CALPHY_LAMMPS_EXECUTABLE`,
+3. `lmp` on your `PATH`.
+
+If none resolve, calphy fails at startup with a message naming all three steps.
 
 
 
@@ -784,12 +890,12 @@ _type_: string \
 _default_: None \
 _example_:
 ```
-mpi_executable: mpiexec
+mpi_executable: mpirun
 ```  
 
-MPI executable to run the LAMMPS with.
-Works only with `reference_phase: solid`, and `mode: fe`.
-Works only if [`script_mode`](script_mode) is `True`.
+The MPI launcher used when `queue.cores > 1`. Resolved as
+`mpi_executable` → `$CALPHY_MPI_EXECUTABLE` → `mpirun` on `PATH`. Ignored for
+serial runs (`queue.cores == 1`).
 
 
 ---
@@ -932,6 +1038,8 @@ n_cycles: 100
 
 Number of cycles to try converging the pressure of the system. If the pressure is not converged after `n_cycles`, an error will be raised. In each `n_cycle`, `n_small_steps` MD steps will be run.
 
+The same limit applies to the spring constant estimate for solids. If the spring constants are not converged after `n_cycles`, the last estimate is used and a warning is logged.
+
 
 ---
 
@@ -946,7 +1054,7 @@ md:
   cmdargs: "-k on g 1 -sf kk -pk kokkos newton on neigh half"
 ```
 
-Extra command-line arguments passed verbatim to the LAMMPS Python library when the LAMMPS object is created. Most commonly used to enable accelerator packages such as `KOKKOS`, `GPU` or `INTEL`.
+Extra command-line arguments appended verbatim to the `lmp` argv for every segment (i.e. `lmp -in seg.lmp -log seg.log -screen none <cmdargs>`). Most commonly used to enable accelerator packages such as `KOKKOS`, `GPU` or `INTEL`. (calphy manages `-in`, `-log` and `-screen` itself, so do not set those here.)
 
 ---
 
@@ -964,6 +1072,25 @@ init_commands:
 ```
 
 Provides the possibility to replace or add initial commands when the LAMMPS object is initialised. If the command is already used in calphy, for example `timestep` or `atom_style` they will be replaced. If it is a new command, it will be added. This commands receive higher priority than the ones that already exist. For examples if you provide `timestep: 0.002` in the `md` block, and `timestep 0.004` in `init_commands`, the timestep used would be 0.004.
+
+---
+
+(md_seed)=
+#### `seed`
+
+_type_: integer or None \
+_default_: None \
+_example_:
+```
+md:
+  seed: 42
+```
+
+Master random seed for the calculation. Every stochastic choice a job makes draws from this one seed: `velocity create`, the Langevin thermostat, Monte-Carlo `atom/swap` moves, the QTB noise generator, and the random atom picks of composition scaling.
+
+If unset (the default), a fresh seed is drawn for every run, so repeated runs of the same input remain statistically independent. Whichever seed is used — given or drawn — is logged and **backfilled into the `input_file.yaml` copy written to the simulation folder**, so any past run can be reproduced exactly by rerunning that file.
+
+Note that a fixed seed makes the LAMMPS *input* deterministic; bitwise-identical trajectories additionally require the same LAMMPS build, core count, and hardware.
 
 ---
 ---
@@ -1139,7 +1266,7 @@ _example_:
 spring_constant: 0.1
 ```
 
-tolerance for the convergence of spring constant calculation.
+Tolerance for the convergence of the spring constant calculation, as the relative change of the spring constants between two cycles. The default of 0.1 stops once the spring constants change by less than 10 %. The spring constants only need to be approximate, since the free energy does not depend on their exact value. If the mean squared displacement cannot be measured, for example because it is zero, the run stops with an error and the spring constants have to be set with [](spring_constants).
 
 ---
 
@@ -1394,7 +1521,7 @@ The number of maximum attempts to try find the melting temperature in a automate
 
 ## `composition_scaling` block
 
-This block contains keywords that are used only for the mode `composition_scaling`.
+This block contains keywords that are used only for the mode `composition_scaling`. The interatomic potential can be a single pair style or an overlay of several ([`pair_mode: overlay`](pair_mode)). Composition scaling renumbers the atom types, so every `pair_coeff` must apply to all types (`* * ...`).
 
 ```
 composition_scaling:
@@ -1599,19 +1726,6 @@ Number of frequency bins discretising the QTB power spectrum from 0 to `f_max`. 
 
 ---
 
-(qtb_seed)=
-#### `seed`
-
-_type_: integer \
-_default_: 880302 \
-_example_:
-```
-seed: 42
-```
-
-Random-number seed for the QTB noise generator. Change between iterations or between independent runs to obtain decorrelated noise realisations.
-
----
 ---
 
 ## `monte_carlo` block
@@ -1867,3 +1981,405 @@ target_natoms: 1500
 The structure parsed from Materials Project is replicated isotropically until it contains approximately this many atoms (ignored if `repeat` is set to anything other than `[1, 1, 1]`).
 
 ---
+
+---
+---
+
+(dcci_block)=
+## `dcci` block
+
+This block contains keywords that are used only for the mode `dcci`, the dynamic
+Clausius-Clapeyron integration of a solid-liquid coexistence line.
+
+```
+mode: dcci
+temperature: 1340        # coexistence temperature at pressure[0]
+pressure: [0, 100000]    # from the known point to the target pressure, in bar
+n_switching_steps: 50000 # length of one sweep
+dcci:
+  n_block_steps: 1000
+  integrator: euler
+  stop_at_target_pressure: True
+  n_check_blocks: 0
+  hysteresis_tolerance: 5.0
+  parallel_cells: False
+```
+
+The mode builds a solid and a liquid cell from the input structure (the liquid
+through the usual melting cycle), equilibrates both at (`temperature`,
+`pressure[0]`) and then drives them side by side at the fixed kinetic
+temperature `T0 = temperature` with the scaled Hamiltonian `K + λU` of
+reversible scaling. The scaled pressure `P_RS` of both cells is ramped linearly
+from `pressure[0]` to `pressure[1]` over `n_switching_steps` steps, and after
+every block of `n_block_steps` steps the scaling factor is updated from the
+block averages of the potential energy and volume of the two cells through the
+Clausius-Clapeyron condition `dλ/dP_RS = -(v_s - v_l)/(u_s - u_l)`. The two
+cells exchange information only at these block boundaries, and only through
+calphy; within a block each follows its pre-set pressure and λ ramps on its own.
+Each block is a point `T = T0/λ`, `P = P_RS/λ` on the coexistence line. A backward sweep
+returns to `pressure[0]`; the line is the mean of both directions and the
+mismatch of the round trip is the hysteresis. Use `n_iterations` for
+independent repetitions. The mode needs `npt: True`, does not support
+`monte_carlo` swaps, and assumes the same composition in both cells.
+
+Both cells have the melt and solidification checks switched on
+(`tolerance.solid_fraction: 0.7`, `tolerance.liquid_fraction: 0.05` unless set
+explicitly): a solid that melts or a liquid that freezes along the line stops
+the calculation with `MeltedError` / `SolidifiedError`.
+
+---
+
+(n_block_steps)=
+#### `n_block_steps`
+
+_type_: int \
+_default_: 1000 \
+_example_:
+```
+n_block_steps: 500
+```
+
+MD steps per integration block, i.e. the pressure step of the Clausius-Clapeyron
+integration. Smaller blocks follow the line more finely but average over fewer
+steps. With the default `execution_mode: executable` every block is one launch of
+the LAMMPS binary per cell, so a 1e5-step sweep with 1000-step blocks means 100
+launches per cell and direction; the library backend has no such cost and can use
+blocks of 10-100 steps.
+
+---
+
+(integrator)=
+#### `integrator`
+
+_type_: string, `euler` or `trapezoid` \
+_default_: `euler` \
+_example_:
+```
+integrator: trapezoid
+```
+
+Corrector applied after each block. `euler` advances λ with the slope of the
+finished block; `trapezoid` uses the mean of the slopes of the last two blocks.
+Within a block λ is always ramped linearly along the last measured slope, so the
+Hamiltonian stays continuous in time.
+
+---
+
+(stop_at_target_pressure)=
+#### `stop_at_target_pressure`
+
+_type_: bool \
+_default_: True \
+_example_:
+```
+stop_at_target_pressure: False
+```
+
+The ramp is applied to the scaled pressure `P_RS`; the real pressure `P_RS/λ`
+runs ahead of it when the coexistence line has a positive slope (λ < 1). With
+this option the forward sweep ends at the first block whose real pressure
+reaches `pressure[1]`, and the backward sweep starts there. Set it to `False`
+to always run the full `n_switching_steps`. For a line with negative slope the
+real pressure lags the ramp and the sweep ends at `P_RS = pressure[1]`; the
+pressure actually reached is reported in `report.yaml`.
+
+---
+
+(n_check_blocks)=
+#### `n_check_blocks`
+
+_type_: int \
+_default_: 0 \
+_example_:
+```
+n_check_blocks: 10
+```
+
+Run the solid-fraction melt and solidification checks on both cells every this
+many blocks during the sweeps. With 0 the checks run only at the end of each
+sweep.
+
+---
+
+(hysteresis_tolerance)=
+#### `hysteresis_tolerance`
+
+_type_: float \
+_default_: 5.0 \
+_example_:
+```
+hysteresis_tolerance: 2.0
+```
+
+In Kelvin. The backward sweep should return to `temperature` at `pressure[0]`;
+the difference is the hysteresis of the integration and is reported in
+`report.yaml`. When it exceeds this tolerance, `hysteresis_high` is set and a
+warning is logged: the sweep is too fast for a reversible integration and
+`n_switching_steps` should be increased. The hysteresis shrinks quickly with the
+sweep length (de Koning et al., Fig. 5).
+
+---
+
+(parallel_cells)=
+#### `parallel_cells`
+
+_type_: bool \
+_default_: False \
+_example_:
+```
+parallel_cells: True
+```
+
+By default the solid and the liquid cell are advanced one after the other, each
+LAMMPS run using all of `queue.cores`, so the wall time of a block is the sum of
+the two cells. With `parallel_cells: True` the two cells run at the same time
+with `queue.cores / 2` cores each, which halves the wall time of the sweeps at
+the same total core count. Needs `queue.cores >= 2`; with a single core the
+cells run sequentially and a warning is logged. The results do not depend on
+this setting.
+
+---
+
+(model-block)=
+## `model` block
+
+The potential for [`engine: thermotorch`](engine): a
+[torch-sim](https://github.com/Radical-AI/torch-sim) model, given either by
+the name of one of thermotorch's loaders or, for anything else, by the import
+path of a Python callable that builds it.
+
+### Named loaders
+
+The common families have named loaders. `kwargs` names the weights explicitly
+(a published model name or an absolute path), so the run's records say which
+weights were used:
+
+```
+engine: thermotorch
+model:
+  name: mace
+  kwargs: {model: medium-omat-0}
+  device: cuda
+```
+
+| `name` | `kwargs` | needs |
+|---|---|---|
+| `mace` | `model`: a `mace_mp` name (`small`, `medium`, `medium-mpa-0`, `medium-omat-0`, `mace-matpes-pbe-0`, ...) or an absolute path; `head`; `cueq` | `mace-torch` |
+| `nequip`, `allegro` | `compiled_model`: absolute path to a `nequip-compile` package | `nequip` |
+| `sevennet` | `checkpoint` (e.g. `7net-mf-ompa`), `modal` (e.g. `omat24`); float32 only | `sevenn` |
+| `mattersim` | `checkpoint` (e.g. `MatterSim-v1.0.0-5M.pth`) | `mattersim` |
+| `pet-mad` | `version`; float32 only | `pet-mad` |
+| `grace` | `model`: grace-runtime name (e.g. `GRACE-2L-OMAT-large-base`); `fp64` | `grace-runtime` |
+| `grace-fs` | `model_path`: absolute path to the YAML LAMMPS' `pair_style grace/fs` reads; `elements` | -- |
+| `lj` | `element`, `sigma`, `epsilon` (each `[AA, BB, AB]`), `cutoff` | -- |
+
+The float32-only families need [`precision: float32`](model_precision).
+
+### Any other potential
+
+`name` can also be the import path of a callable (a class or a function) that
+returns a torch-sim model:
+
+- `package.module.attribute`, or `package.module:attribute`, for a callable in
+  an installed package, for example
+  `torch_sim.models.lennard_jones.LennardJonesModel`;
+- `/absolute/path/to/file.py:function` for a function in a file of your own.
+  The path must be absolute (`~` and `$VARS` are expanded): a relative path
+  would resolve against wherever the job starts, which under a scheduler need
+  not be where the input was written.
+
+```
+model:
+  name: /home/me/potentials/my_models.py:my_mlip
+  kwargs: {checkpoint: /home/me/potentials/my_mlip.pt}
+```
+
+```python
+# /home/me/potentials/my_models.py
+def my_mlip(checkpoint, device, dtype):
+    import torch
+    from my_package import MyTorchSimModel    # any torch-sim ModelInterface
+    return MyTorchSimModel(torch.load(checkpoint), device=device, dtype=dtype,
+                           compute_forces=True, compute_stress=True)
+```
+
+The callable receives `kwargs`, plus `device` and `dtype` when it has
+parameters of those names. Put the weights in `kwargs`, not inside the
+function, so that `report.yaml` records them.
+
+### Checks and modes
+
+Before any MD runs, calphy checks that the model computes forces and stress
+(the pressure is read in every averaging stage) and that it runs in float64,
+or in float32 under [`precision: float32`](model_precision).
+
+`mode: alchemy` switches between two potentials, so it takes a list of two
+model blocks, `[initial, final]`, or `[base, added]` with
+`alchemy_coupling`. Any two torch models can be switched, for example two
+MLIPs on the same cell:
+
+```
+mode: alchemy
+engine: thermotorch
+model:
+  - name: mace
+    kwargs: {model: small}
+  - name: mace
+    kwargs: {model: medium-omat-0}
+```
+
+`mode: composition_scaling` takes one model and evaluates it on the input and
+on the output species of the transformed atoms, so the model must know every
+element of the `composition_scaling` block (for `grace-fs`, list them all in
+`kwargs.elements`). With a universal MLIP any element it was trained on can be
+substituted.
+
+---
+
+(model_name)=
+#### `name`
+
+_type_: string \
+_default_: None \
+_example_:
+```
+name: mace
+```
+
+A loader name (see the table above) or the import path of a callable:
+`package.module.attribute`, `package.module:attribute` or
+`/absolute/path/to/file.py:attribute`.
+
+---
+
+(model_kwargs)=
+#### `kwargs`
+
+_type_: dict \
+_default_: {} \
+_example_:
+```
+kwargs: {model: medium-omat-0}
+```
+
+Keyword arguments passed to the loader or callable unchanged. The named loaders
+require absolute paths for weight files: a value with a directory part, a
+weights-file suffix (`.model`, `.pt`, `.pth`, `.yaml`, ...) or that names an
+existing file is taken as a path, and refused if it is relative. A callable
+given by import path receives its `kwargs` as written, so calphy cannot check
+the paths in them: give those absolute too. `device` and `dtype` are not allowed here:
+use [`device`](model_device) and [`precision`](model_precision).
+
+---
+
+(model_device)=
+#### `device`
+
+_type_: string \
+_default_: cuda if available, else cpu \
+_example_:
+```
+device: cuda:0
+```
+
+Passed to the callable as a `torch.device`, if it has a parameter called
+`device`.
+
+---
+
+(model_precision)=
+#### `precision`
+
+_type_: string \
+_default_: float64 \
+_example_:
+```
+precision: float32
+```
+
+`float64` or `float32`. Passed to the callable as `dtype`, if it has a
+parameter called `dtype`. thermotorch integrates in float64; with `float32`
+only the model's own evaluation runs in single precision (the model is wrapped
+in thermotorch's `SinglePrecisionModel`), while positions, the integrator and
+the switching work stay float64. Use it for models whose weights are float32
+only, or for speed once the error is checked to be small.
+
+---
+
+(thermotorch-block)=
+## `thermotorch` block
+
+Settings that only [`engine: thermotorch`](engine) has. Unset values take
+thermotorch's defaults.
+
+```
+thermotorch:
+  pressure_convergence: sem
+  melt_t_factor: 2.0
+```
+
+---
+
+(tt_pressure_convergence)=
+#### `pressure_convergence`
+
+_type_: string \
+_default_: sem \
+_example_:
+```
+pressure_convergence: calphy
+```
+
+How the averaging stage decides the box has reached the target pressure.
+
+- `sem` (thermotorch's default): stops once the target lies within
+  `max(tolerance.pressure, 2 x standard error)` of the running mean pressure,
+  after at least 5 cycles, with no drift left in the volume and the kinetic
+  temperature on its setpoint. The residual pressure it accepts costs a
+  second-order amount of free energy, since F is stationary in volume at the
+  target pressure.
+- `calphy`: calphy's own test, `|<P> - target| < tolerance.pressure`.
+
+---
+
+(tt_melt_t_factor)=
+#### `melt_t_factor`
+
+_type_: float \
+_default_: 2.0 \
+_example_:
+```
+melt_t_factor: 2.5
+```
+
+For a liquid, the superheating temperature as a multiple of the highest
+calculation temperature, when [`temperature_high`](temperature_high) is not
+set.
+
+---
+
+(tt_n_melt_steps)=
+#### `n_melt_steps`
+
+_type_: int \
+_default_: n_equilibration_steps \
+_example_:
+```
+n_melt_steps: 50000
+```
+
+MD steps spent melting a liquid's starting structure.
+
+---
+
+(tt_cell_damping)=
+#### `cell_damping`
+
+_type_: float \
+_default_: md.barostat_damping \
+_example_:
+```
+cell_damping: 1.0
+```
+
+Ring-down time in ps of the barostat's cell degree of freedom.

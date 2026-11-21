@@ -8,4 +8,4 @@ contributing](extending)
 section for more details.
 
 Any other questions or suggestions are welcome, please contact
-[us](mailto:s.menon@mpie.de).
+[us](mailto:sarath.menon@ruhr-uni-bochum.de).

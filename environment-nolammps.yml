@@ -11,11 +11,18 @@ dependencies:
   - scipy
   - pyyaml
   - mendeleev
-  - openmpi 
-  - numpy
-  - mpi4py
-  - pylammpsmpi
+  # openmpi provides mpirun for parallel (cores > 1) calphy runs; the build
+  # tools above are for compiling your own `lmp` binary (calphy drives the
+  # executable directly; a LAMMPS python library is only needed for the
+  # optional library backend, pip install calphy[library]).
+  - openmpi
+  - numpy >=2.0.0
   - matplotlib
   - tqdm
   - pydantic >=2.3.0
-  - pyscal3
+  - ase
+  - pip
+  # pyscal3 4.x (the pyscal 4 API) is on PyPI but not yet on conda-forge;
+  # move it back to the conda list once the feedstock has 4.0.0.
+  - pip:
+    - pyscal3>=4.0.0

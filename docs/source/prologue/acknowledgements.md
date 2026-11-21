@@ -4,7 +4,7 @@
 
 -   [Sarath
     Menon](http://sarathmenon.me)  
-    s.menon@mpie.de
+    sarath.menon@ruhr-uni-bochum.de
 -   Yury Lysogorskiy
 -   Ralf Drautz
 
@@ -31,7 +31,7 @@ We acknowledge the following people for their contribution to calphy:
 
 The development of this module was started at the [Interdisciplinary Centre for Advanced
 Materials Simulation](http://www.icams.de/content), at the [Ruhr
-University Bochum](https://www.ruhr-uni-bochum.de/en), Germany. Current development is carried out at the [Max-Planck-Institut für Eisenforschung GmbH](https://www.mpie.de/).
+University Bochum](https://www.ruhr-uni-bochum.de/en), Germany, where development continues.
 
 The following projects provided the funding for the development of calphy:
 

@@ -2,23 +2,25 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 import os
@@ -34,6 +36,7 @@ from calphy.input import read_inputfile
 from calphy.liquid import Liquid
 from calphy.solid import Solid
 from calphy.alchemy import Alchemy
+from calphy.dcci import DynamicCCI
 from calphy.routines import (
     MeltingTemp,
     routine_fe,
@@ -62,10 +65,18 @@ def setup_calculation(calc):
     job: Phase class
         job class
     """
+    if calc.engine == "thermotorch":
+        from calphy.thermotorch_backend import ThermotorchJob
+
+        return ThermotorchJob(calculation=calc)
+
     # now we need to modify the routines
     if calc.mode == "melting_temperature":
         simfolder = None
         job = MeltingTemp(calculation=calc, simfolder=simfolder)
+    elif calc.mode == "dcci":
+        simfolder = calc.create_folders()
+        job = DynamicCCI(calculation=calc, simfolder=simfolder)
     elif calc.mode == "alchemy" or calc.mode == "composition_scaling":
         simfolder = calc.create_folders()
         job = Alchemy(calculation=calc, simfolder=simfolder)
@@ -91,6 +102,9 @@ def run_calculation(job):
     -------
     job : Phase class
     """
+    if getattr(job, "engine", "lammps") == "thermotorch":
+        return job.run()
+
     if job.calc.mode == "fe":
         job = routine_fe(job)
     elif job.calc.mode == "ts":
@@ -99,6 +113,8 @@ def run_calculation(job):
         job = routine_alchemy(job)
     elif job.calc.mode == "melting_temperature":
         job.calculate_tm()
+    elif job.calc.mode == "dcci":
+        job.calculate_coexistence_line()
     elif job.calc.mode == "tscale":
         job = routine_tscale(job)
     elif job.calc.mode == "pscale":
@@ -107,7 +123,7 @@ def run_calculation(job):
         job = routine_composition_scaling(job)
     else:
         raise ValueError(
-            "Mode should be either fe/ts/alchemy/melting_temperature/tscale/pscale/composition_scaling"
+            "Mode should be either fe/ts/alchemy/melting_temperature/dcci/tscale/pscale/composition_scaling"
         )
     return job
 
@@ -176,6 +192,12 @@ def main():
 
         calc = Calculation(**calc_data)
 
+    if calc.engine == "thermotorch":
+        from calphy.thermotorch_backend import ThermotorchJob
+
+        ThermotorchJob(calculation=calc, log_to_screen=log_to_screen).run()
+        return
+
     # format and parse the arguments
     simfolder = calc.create_folders()
 
@@ -185,6 +207,11 @@ def main():
         job = MeltingTemp(
             calculation=calc, simfolder=simfolder, log_to_screen=log_to_screen
         )
+    elif calc.mode == "dcci":
+        job = DynamicCCI(
+            calculation=calc, simfolder=simfolder, log_to_screen=log_to_screen
+        )
+        os.chdir(simfolder)
     elif calc.mode == "alchemy" or calc.mode == "composition_scaling":
         job = Alchemy(
             calculation=calc, simfolder=simfolder, log_to_screen=log_to_screen
@@ -209,6 +236,8 @@ def main():
         _ = routine_alchemy(job)
     elif job.calc.mode == "melting_temperature":
         job.calculate_tm()
+    elif job.calc.mode == "dcci":
+        job.calculate_coexistence_line()
     elif job.calc.mode == "tscale":
         _ = routine_tscale(job)
     elif job.calc.mode == "pscale":
@@ -217,5 +246,5 @@ def main():
         _ = routine_composition_scaling(job)
     else:
         raise ValueError(
-            "Mode should be either fe/ts/alchemy/melting_temperature/tscale/pscale/composition_scaling"
+            "Mode should be either fe/ts/alchemy/melting_temperature/dcci/tscale/pscale/composition_scaling"
         )

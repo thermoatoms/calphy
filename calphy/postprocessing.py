@@ -1,3 +1,27 @@
+"""
+calphy: a Python library and command line interface for automated free
+energy calculations.
+
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
+
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
+
+More information about the program can be found in:
+Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
+DOI: 10.1103/PhysRevMaterials.5.103801
+
+For more information contact:
+sarath.menon@ruhr-uni-bochum.de
+"""
 import os
 import numpy as np
 import yaml
@@ -44,7 +68,64 @@ def _extract_error(errfile):
     return error_code
 
 
-def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=False):
+def _read_sweep_data(folder, stride=1):
+    """
+    Read the per-lambda switching data of every reversible-scaling replica.
+
+    Parameters
+    ----------
+    folder : str
+        Calculation folder holding ``ts.forward_<i>.dat`` /
+        ``ts.backward_<i>.dat``.
+    stride : int, optional
+        Keep every n-th sample.
+
+    Returns
+    -------
+    dict
+        ``forward_energy_diff`` / ``backward_energy_diff`` (energy differential
+        per lambda) and ``forward_lambda`` / ``backward_lambda``, each a list
+        with one array per replica, or None where no replica was found.
+
+    Raises
+    ------
+    Exception
+        Propagates any read/parse failure; the caller decides whether one bad
+        calculation should be fatal.
+    """
+    f_ediffs, b_ediffs, f_lambdas, b_lambdas = [], [], [], []
+    i = 1
+    while True:
+        fwdfile = os.path.join(folder, f"ts.forward_{i}.dat")
+        bkdfile = os.path.join(folder, f"ts.backward_{i}.dat")
+        if not (os.path.exists(fwdfile) and os.path.exists(bkdfile)):
+            break
+        # ndmin=2 so a single-row sweep still unpacks as columns
+        fwd = np.loadtxt(fwdfile, comments="#", ndmin=2)[::stride]
+        bkd = np.loadtxt(bkdfile, comments="#", ndmin=2)[::stride]
+        fdx, flambda = fwd[:, 0], fwd[:, 3]
+        bdx, blambda = bkd[:, 0], bkd[:, 3]
+        f_ediffs.append(fdx / flambda)
+        b_ediffs.append(bdx / blambda)
+        f_lambdas.append(flambda)
+        b_lambdas.append(blambda)
+        i += 1
+
+    return {
+        "forward_energy_diff": f_ediffs or None,
+        "backward_energy_diff": b_ediffs or None,
+        "forward_lambda": f_lambdas or None,
+        "backward_lambda": b_lambdas or None,
+    }
+
+
+def gather_results(
+    mainfolder,
+    reduce_composition=True,
+    extract_phase_prefix=False,
+    include_sweep_data=False,
+    sweep_data_stride=1,
+):
     """
     Gather results from all subfolders in a given folder into a Pandas DataFrame
 
@@ -61,11 +142,54 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
         Should be used in conjuction with phase diagram mode.
         Extracts the prefix and add it as a phase_name column.
 
+    include_sweep_data: bool, optional, default False
+        Load the raw per-lambda switching data of every reversible-scaling
+        replica into the frame.  Off by default because it is expensive:
+        ``ts.forward_*.dat`` / ``ts.backward_*.dat`` are written by
+        ``fix print 1``, i.e. one row per MD step, so a sweep of
+        ``n_switching_steps`` keeps roughly ``n_switching_steps * 32`` bytes
+        per replica per calculation resident in the frame (~1.6 MB per
+        calculation for a 50000-step sweep, scaling with ``n_iterations``).
+        Enable it when diagnosing *where* along a sweep forward and backward
+        diverge; leave it off to gather free energies.
+
+    sweep_data_stride: int, optional, default 1
+        Keep only every n-th sample of the sweep data.  Only meaningful with
+        ``include_sweep_data=True``; a stride of 10--100 preserves the shape
+        of the hysteresis while cutting the memory cost proportionally.
+
     Returns
     -------
     df: pandas DataFrame
-        DataFrame with results
+        DataFrame with results. In addition to the columns produced
+        previously, this also includes:
+
+        - free_energy_error: array (ts/tscale, from temperature_sweep.dat)
+          or 0.0 (fe/alchemy/composition_scaling); the statistical
+          standard error of the mean free energy, not a hysteresis check.
+        - dissipation: mean switching dissipation (fe/alchemy) or NaN (ts/tscale)
+        - ts_dissipation: max hysteresis over a ts/tscale sweep, or NaN otherwise
+        - ts_dissipation_high: True where that hysteresis exceeded
+          tolerance.dissipation, i.e. the sweep did not stay reversible and the
+          free energy it produced should not be trusted; False when it was
+          within tolerance, NaN where no verdict was recorded
+        - forward_energy_diff / backward_energy_diff: list of arrays, one per
+          reversible-scaling replica (ts/tscale only, else None); the raw
+          per-lambda energy differential, useful to see *where* along the
+          sweep forward/backward diverge (phase-transition diagnostic).
+          Populated only when ``include_sweep_data`` is True, else None.
+        - forward_lambda / backward_lambda: matching lambda arrays for the
+          above (ts/tscale only, else None)
+
+    Notes
+    -----
+    A calculation whose sweep files are unreadable (a job killed mid-sweep
+    leaves a ragged final row) does not abort the gather: its sweep columns
+    stay None and the reason is recorded in ``error_code``.
     """
+    if sweep_data_stride < 1:
+        raise ValueError("sweep_data_stride must be >= 1")
+
     try:
         import pandas as pd
     except ImportError:
@@ -78,6 +202,10 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
     datadict["temperature"] = []
     datadict["pressure"] = []
     datadict["free_energy"] = []
+    datadict["free_energy_error"] = []
+    datadict["dissipation"] = []
+    datadict["ts_dissipation"] = []
+    datadict["ts_dissipation_high"] = []
     datadict["reference_phase"] = []
     datadict["error_code"] = []
     datadict["composition"] = []
@@ -85,6 +213,10 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
     datadict["ideal_entropy"] = []
     datadict["phase_name"] = []
     datadict["reference_composition"] = []
+    datadict["forward_energy_diff"] = []
+    datadict["backward_energy_diff"] = []
+    datadict["forward_lambda"] = []
+    datadict["backward_lambda"] = []
 
     folders = next(os.walk(mainfolder))[1]
     for folder in folders:
@@ -119,6 +251,14 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
         # check output file
         outfile = os.path.join(mainfolder, folder, "report.yaml")
         datadict["error_code"].append(None)
+        datadict["free_energy_error"].append(np.nan)
+        datadict["dissipation"].append(np.nan)
+        datadict["ts_dissipation"].append(np.nan)
+        datadict["ts_dissipation_high"].append(np.nan)
+        datadict["forward_energy_diff"].append(None)
+        datadict["backward_energy_diff"].append(None)
+        datadict["forward_lambda"].append(None)
+        datadict["backward_lambda"].append(None)
 
         # print(inpfile)
         if not os.path.exists(outfile):
@@ -131,12 +271,20 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
 
         if mode in ["fe", "alchemy", "composition_scaling"]:
             datadict["status"].append("True")
+            datadict["free_energy_error"][-1] = 0.0
 
         # ok, valid calculation, try to parse input file to get info
         with open(outfile, "r") as fin:
             out = yaml.safe_load(fin)
 
         datadict["free_energy"].append(out["results"]["free_energy"])
+        # scalar quality metrics calphy already computes: qdiss (mean switching
+        # dissipation, fe/alchemy) and max hysteresis over a ts/tscale sweep
+        datadict["dissipation"][-1] = out["results"].get("dissipation", np.nan)
+        datadict["ts_dissipation"][-1] = out["results"].get("ts_dissipation", np.nan)
+        datadict["ts_dissipation_high"][-1] = out["results"].get(
+            "ts_dissipation_high", np.nan
+        )
 
         # add normal composition
         el_arr = np.array(out["input"]["element"].split(" ")).astype(str)
@@ -170,9 +318,38 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
             )
             if os.path.exists(datafile):
                 datadict["status"].append("True")
-                t, f = np.loadtxt(datafile, unpack=True, usecols=(0, 1))
+                t, f, ferr = np.loadtxt(datafile, unpack=True, usecols=(0, 1, 2))
                 datadict["temperature"][-1] = t
                 datadict["free_energy"][-1] = f
+                datadict["free_energy_error"][-1] = ferr
+
+                # Raw per-lambda energy differential of each forward/backward
+                # switching replica; diverging forward vs. backward curves
+                # signal hysteresis/a structural change during the sweep
+                # (ts_dissipation above is just the max of this difference).
+                #
+                # Opt-in: these files carry one row per MD step, so loading
+                # them for every calculation dominates both the runtime and
+                # the size of the returned frame.
+                if include_sweep_data:
+                    try:
+                        sweeps = _read_sweep_data(
+                            os.path.join(mainfolder, folder), sweep_data_stride
+                        )
+                    except Exception as exc:
+                        # a job killed mid-sweep leaves a ragged final row;
+                        # that must not cost us every other calculation
+                        warnings.warn(
+                            "could not read switching data in %s: %s: %s"
+                            % (folder, type(exc).__name__, exc),
+                            RuntimeWarning,
+                        )
+                        datadict["error_code"][-1] = "unreadable switching data: %s" % (
+                            type(exc).__name__,
+                        )
+                    else:
+                        for key, val in sweeps.items():
+                            datadict[key][-1] = val
             else:
                 datadict["status"].append("False")
                 errfile = os.path.join(os.getcwd(), mainfolder, folder + ".sub.err")
@@ -197,7 +374,19 @@ def gather_results(mainfolder, reduce_composition=True, extract_phase_prefix=Fal
     if not extract_phase_prefix:
         del datadict["phase_name"]
 
-    df = pd.DataFrame(data=datadict)
+    # pandas >= 3 stores text columns with a string dtype that turns None into
+    # NaN; keep them as object so a missing value (error_code of a successful
+    # run, say) stays None
+    df = pd.DataFrame(
+        data={
+            key: (
+                pd.Series(val, dtype=object)
+                if any(isinstance(v, str) for v in val)
+                else val
+            )
+            for key, val in datadict.items()
+        }
+    )
     return df
 
 
@@ -485,3 +674,58 @@ def find_transition_temperature(folder1, folder2, fit_order=4, plot=True):
         plt.xlabel("Temperature (K)")
         plt.legend(frameon=False)
     return transition_temp
+
+
+def read_coexistence_line(folder):
+    """
+    Read the coexistence line written by a ``mode: dcci`` calculation.
+
+    Parameters
+    ----------
+    folder : str
+        The ``dcci-*`` calculation folder.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``pressure`` (bar), ``temperature`` (K), ``error`` (K),
+        ``temperature_forward`` and ``temperature_backward`` (K).
+    """
+    data = np.atleast_2d(np.loadtxt(os.path.join(folder, "coexistence_line.dat")))
+    return pd.DataFrame(
+        data,
+        columns=["pressure", "temperature", "error", "temperature_forward", "temperature_backward"],
+    )
+
+
+def plot_coexistence_line(folder, ax=None, show_directions=True, **kwargs):
+    """
+    Plot the coexistence line of a ``mode: dcci`` calculation, T against P.
+
+    Parameters
+    ----------
+    folder : str
+        The ``dcci-*`` calculation folder.
+    ax : matplotlib axis, optional
+        Axis to draw on; a new figure is created otherwise.
+    show_directions : bool
+        Also draw the forward and backward sweeps as thin lines.
+    kwargs
+        Passed to ``ax.errorbar`` for the mean line.
+
+    Returns
+    -------
+    matplotlib axis
+    """
+    df = read_coexistence_line(folder)
+    if ax is None:
+        _, ax = plt.subplots()
+    if show_directions:
+        ax.plot(df.pressure, df.temperature_forward, lw=0.8, alpha=0.6, label="forward")
+        ax.plot(df.pressure, df.temperature_backward, lw=0.8, alpha=0.6, label="backward")
+    kwargs.setdefault("label", "coexistence line")
+    ax.errorbar(df.pressure, df.temperature, yerr=df.error, **kwargs)
+    ax.set_xlabel("pressure (bar)")
+    ax.set_ylabel("temperature (K)")
+    ax.legend()
+    return ax

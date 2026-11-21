@@ -59,7 +59,7 @@ with local feature development.
     will be credited.
 
 If you have trouble with any of the steps, or you need help, please
-[send an email](mailto:s.menon@mpie.de) and we will be happy to
+[send an email](mailto:sarath.menon@ruhr-uni-bochum.de) and we will be happy to
 help! All of the contributions are greatly appreciated and will be
 credited in Developers/Acknowledgements page.
 
