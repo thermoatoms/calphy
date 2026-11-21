@@ -2143,61 +2143,96 @@ this setting.
 (model-block)=
 ## `model` block
 
-The potential for [`engine: thermotorch`](engine): any Python callable (a
-class or a function) that returns a
-[torch-sim](https://github.com/Radical-AI/torch-sim) model, named by its full
-import path. There is no fixed list of supported models.
+The potential for [`engine: thermotorch`](engine): a
+[torch-sim](https://github.com/Radical-AI/torch-sim) model, given either by
+the name of one of thermotorch's loaders or, for anything else, by the import
+path of a Python callable that builds it.
 
-GRACE-FS, using thermotorch's torch implementation and the same YAML file
-LAMMPS' `pair_style grace/fs` reads:
+### Named loaders
+
+The common families have named loaders. `kwargs` names the weights explicitly
+(a published model name or an absolute path), so the run's records say which
+weights were used:
 
 ```
 engine: thermotorch
 model:
-  name: thermotorch.models.grace_fs.GraceFSModel
-  kwargs:
-    model_path: /path/to/FS_model.yaml
-    elements: [Cu, Ag]
+  name: mace
+  kwargs: {model: medium-omat-0}
   device: cuda
 ```
 
-A model that needs a few lines of setup (GRACE-2L through `grace-runtime`,
-MACE, NequIP, ...) is given as a small factory function in a file of your
-own, named as `file.py:function`:
+| `name` | `kwargs` | needs |
+|---|---|---|
+| `mace` | `model`: a `mace_mp` name (`small`, `medium`, `medium-mpa-0`, `medium-omat-0`, `mace-matpes-pbe-0`, ...) or an absolute path; `head`; `cueq` | `mace-torch` |
+| `nequip`, `allegro` | `compiled_model`: absolute path to a `nequip-compile` package | `nequip` |
+| `sevennet` | `checkpoint` (e.g. `7net-mf-ompa`), `modal` (e.g. `omat24`); float32 only | `sevenn` |
+| `mattersim` | `checkpoint` (e.g. `MatterSim-v1.0.0-5M.pth`) | `mattersim` |
+| `pet-mad` | `version`; float32 only | `pet-mad` |
+| `grace` | `model`: grace-runtime name (e.g. `GRACE-2L-OMAT-large-base`); `fp64` | `grace-runtime` |
+| `grace-fs` | `model_path`: absolute path to the YAML LAMMPS' `pair_style grace/fs` reads; `elements` | -- |
+| `lj` | `element`, `sigma`, `epsilon` (each `[AA, BB, AB]`), `cutoff` | -- |
+
+The float32-only families need [`precision: float32`](model_precision).
+
+### Any other potential
+
+`name` can also be the import path of a callable (a class or a function) that
+returns a torch-sim model:
+
+- `package.module.attribute`, or `package.module:attribute`, for a callable in
+  an installed package, for example
+  `torch_sim.models.lennard_jones.LennardJonesModel`;
+- `/absolute/path/to/file.py:function` for a function in a file of your own.
+  The path must be absolute (`~` and `$VARS` are expanded): a relative path
+  would resolve against wherever the job starts, which under a scheduler need
+  not be where the input was written.
 
 ```
 model:
-  name: ./my_models.py:grace_2l_omat
+  name: /home/me/potentials/my_models.py:my_mlip
+  kwargs: {checkpoint: /home/me/potentials/my_mlip.pt}
 ```
 
 ```python
-# my_models.py
-def grace_2l_omat(device, dtype):
-    from grace_runtime.torchsim import GRACERuntimeModel
-    return GRACERuntimeModel("GRACE-2L-OMAT-large-base-fp64", device=str(device),
-                             dtype=dtype, compute_forces=True, compute_stress=True)
+# /home/me/potentials/my_models.py
+def my_mlip(checkpoint, device, dtype):
+    import torch
+    from my_package import MyTorchSimModel    # any torch-sim ModelInterface
+    return MyTorchSimModel(torch.load(checkpoint), device=device, dtype=dtype,
+                           compute_forces=True, compute_stress=True)
 ```
 
+The callable receives `kwargs`, plus `device` and `dtype` when it has
+parameters of those names. Put the weights in `kwargs`, not inside the
+function, so that `report.yaml` records them.
+
+### Checks and modes
+
 Before any MD runs, calphy checks that the model computes forces and stress
-(the pressure is read in every averaging stage) and that it runs in float64.
+(the pressure is read in every averaging stage) and that it runs in float64,
+or in float32 under [`precision: float32`](model_precision).
 
 `mode: alchemy` switches between two potentials, so it takes a list of two
 model blocks, `[initial, final]`, or `[base, added]` with
-`alchemy_coupling`. Any two torch models can be switched,
-for example two MLIPs on the same cell:
+`alchemy_coupling`. Any two torch models can be switched, for example two
+MLIPs on the same cell:
 
 ```
 mode: alchemy
 engine: thermotorch
 model:
-  - name: ./my_models.py:mace_mp_small
-  - name: ./my_models.py:mace_omat
+  - name: mace
+    kwargs: {model: small}
+  - name: mace
+    kwargs: {model: medium-omat-0}
 ```
 
 `mode: composition_scaling` takes one model and evaluates it on the input and
 on the output species of the transformed atoms, so the model must know every
-element of the `composition_scaling` block. With a universal MLIP
-any element it was trained on can be substituted.
+element of the `composition_scaling` block (for `grace-fs`, list them all in
+`kwargs.elements`). With a universal MLIP any element it was trained on can be
+substituted.
 
 ---
 
@@ -2208,13 +2243,12 @@ _type_: string \
 _default_: None \
 _example_:
 ```
-name: torch_sim.models.lennard_jones.LennardJonesModel
+name: mace
 ```
 
-Full import path of the callable. Accepted forms are
-`package.module.attribute`, `package.module:attribute` and
-`path/to/file.py:attribute`. Relative paths are relative to the directory
-calphy is run from.
+A loader name (see the table above) or the import path of a callable:
+`package.module.attribute`, `package.module:attribute` or
+`/absolute/path/to/file.py:attribute`.
 
 ---
 
@@ -2225,12 +2259,12 @@ _type_: dict \
 _default_: {} \
 _example_:
 ```
-kwargs: {sigma: 3.405, epsilon: 0.0104, cutoff: 7.5, compute_stress: true}
+kwargs: {model: medium-omat-0}
 ```
 
-Keyword arguments passed to the callable unchanged. File paths in them are
-relative to the directory calphy is run from. `device` and `dtype` are not
-allowed here: use [`device`](model_device) and [`precision`](model_precision).
+Keyword arguments passed to the loader or callable unchanged. The loaders
+require absolute paths for files. `device` and `dtype` are not allowed here:
+use [`device`](model_device) and [`precision`](model_precision).
 
 ---
 

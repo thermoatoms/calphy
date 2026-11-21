@@ -36,18 +36,21 @@ protocols on torch-sim and writes the same output files (``report.yaml``,
 ``forward_N.dat``/``backward_N.dat``, ``temperature_sweep.dat``), so
 :func:`calphy.postprocessing.gather_results` reads the results unchanged.
 
-The potential is any Python callable that returns a torch-sim model, named by
-its full import path in the ``model`` block::
+The potential is named in the ``model`` block: one of thermotorch's loaders by
+name (``mace``, ``nequip``, ``sevennet``, ``mattersim``, ``pet-mad``,
+``grace``, ``grace-fs``, ``lj``; ``thermotorch.models.loaders``), or any other
+callable returning a torch-sim model by its import path
+(``package.module.Factory`` or ``/absolute/path/to/file.py:function``)::
 
     engine: thermotorch
     model:
-      name: thermotorch.models.grace_fs.GraceFSModel   # or ./models.py:my_factory
-      kwargs: {model_path: FS_model.yaml, elements: [Cu]}
+      name: mace
+      kwargs: {model: medium-omat-0}
       device: cuda          # default: cuda if available, else cpu
       precision: float64    # float32 runs only the model in single precision
 
 ``device`` and ``dtype`` are passed to the callable when it has parameters of
-those names; ``kwargs`` are passed unchanged. ``mode: alchemy`` takes a list of
+those names; ``kwargs`` are passed unchanged. File paths must be absolute. ``mode: alchemy`` takes a list of
 two such blocks, ``[initial, final]`` (``[base, added]`` with
 ``alchemy_coupling``).
 
@@ -250,19 +253,38 @@ def _why_refused(field):
 # Model construction
 # --------------------------------------------------------------------------- #
 def resolve_callable(name):
-    """Import the object a full name refers to.
+    """The callable ``model.name`` refers to.
 
     Accepted forms:
 
+    * ``mace``, ``grace-fs``, ... -- a bare name: one of thermotorch's named
+      loaders (``thermotorch.models.loaders``);
     * ``package.module.attribute`` -- the longest importable module prefix is
       imported and the rest is looked up as (nested) attributes;
     * ``package.module:attribute`` -- explicit module/attribute split;
-    * ``path/to/file.py:attribute`` -- a Python file, relative to the current
-      directory (where calphy is run from).
+    * ``/absolute/path/to/file.py:attribute`` -- a Python file. The path must
+      be absolute (``~`` and ``$VARS`` are expanded): a relative one would
+      resolve against wherever the job happens to start.
     """
     if not isinstance(name, str) or not name.strip():
-        raise ValueError("model.name must be a non-empty import path")
+        raise ValueError("model.name must be a loader name or an import path")
     name = name.strip()
+
+    if not any(c in name for c in ".:/"):
+        try:
+            from thermotorch.models.loaders import get
+        except ImportError as exc:
+            raise ImportError(INSTALL_HINT) from exc
+        try:
+            return get(name)
+        except KeyError as exc:
+            raise ValueError(
+                "model.name %r: %s" % (name, exc.args[0])) from None
+
+    if "/" in name and ":" not in name:
+        raise ValueError(
+            "model.name %r looks like a file; name the function too, as "
+            "'/absolute/path/to/file.py:function'" % name)
 
     if ":" in name:
         target, attr = name.rsplit(":", 1)
@@ -277,8 +299,9 @@ def resolve_callable(name):
     parts = name.split(".")
     if len(parts) < 2:
         raise ValueError(
-            "model.name %r is not a full import path; give "
-            "'package.module.attribute' or 'path/to/file.py:attribute'" % name
+            "model.name %r is neither a loader name nor a full import path; "
+            "give 'package.module.attribute' or "
+            "'/absolute/path/to/file.py:attribute'" % name
         )
     for split in range(len(parts) - 1, 0, -1):
         modname = ".".join(parts[:split])
@@ -309,7 +332,12 @@ def _import(modname, name):
 
 
 def _load_file_module(path):
-    path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+    expanded = os.path.expanduser(os.path.expandvars(path))
+    if not os.path.isabs(expanded):
+        raise ValueError(
+            "model.name: the file in %r must be given as an absolute path "
+            "(a relative one resolves against wherever the job starts)" % path)
+    path = expanded
     if not os.path.isfile(path):
         raise FileNotFoundError("model.name refers to %s, which does not exist" % path)
     modname = "calphy_user_model_" + os.path.splitext(os.path.basename(path))[0]

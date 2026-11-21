@@ -115,18 +115,46 @@ def test_module_colon_attribute():
 
 def test_file_colon_attribute(tmp_path):
     (tmp_path / "models.py").write_text("def build():\n    return 42\n")
-    assert resolve_callable("./models.py:build")() == 42
+    assert resolve_callable(f"{tmp_path}/models.py:build")() == 42
+
+
+def test_a_relative_file_path_is_refused(tmp_path):
+    # relative paths resolve against wherever a job starts: refused
+    (tmp_path / "models.py").write_text("def build():\n    return 42\n")
+    with pytest.raises(ValueError, match="absolute"):
+        resolve_callable("./models.py:build")
 
 
 def test_bad_names_say_what_is_wrong():
-    with pytest.raises(ValueError, match="full import path"):
-        resolve_callable("LennardJonesModel")
+    with pytest.raises(ValueError, match="name the function too"):
+        resolve_callable("/abs/path/models.py")
     with pytest.raises(ImportError, match="no attribute"):
         resolve_callable("os.path.no_such_thing")
     with pytest.raises(ImportError, match="could not import"):
         resolve_callable("no_such_package_xyz.models.Model")
     with pytest.raises(FileNotFoundError):
-        resolve_callable("./missing.py:build")
+        resolve_callable("/no/such/dir/missing.py:build")
+
+
+def test_a_bare_name_is_a_thermotorch_loader():
+    pytest.importorskip("thermotorch")
+    from thermotorch.models.loaders import get
+
+    assert resolve_callable("mace") is get("mace")
+    assert resolve_callable("grace-fs") is get("grace-fs")
+    with pytest.raises(ValueError, match="no model loader"):
+        resolve_callable("LennardJonesModel")
+
+
+def test_a_named_loader_builds_through_the_model_block():
+    pytest.importorskip("thermotorch")
+    from calphy.thermotorch_backend import build_model
+
+    model = build_model(TorchModel(
+        name="lj", device="cpu",
+        kwargs={"element": ["Ar", "Kr"], "sigma": [3.405, 3.6, 3.5],
+                "epsilon": [0.0104, 0.014, 0.012], "cutoff": 7.5}))
+    assert model.compute_stress and str(model.device) == "cpu"
 
 
 def test_a_missing_dependency_is_not_mistaken_for_a_bad_name(tmp_path, monkeypatch):
@@ -183,8 +211,8 @@ def test_float32_model_needs_precision_float32(tmp_path):
                                      dtype=torch.float32)
     """))
     with pytest.raises(ValueError, match="precision: float32"):
-        build_model(TorchModel(name="./f32.py:build", device="cpu"))
-    wrapped = build_model(TorchModel(name="./f32.py:build", device="cpu",
+        build_model(TorchModel(name=f"{tmp_path}/f32.py:build", device="cpu"))
+    wrapped = build_model(TorchModel(name=f"{tmp_path}/f32.py:build", device="cpu",
                                      precision="float32"))
     assert type(wrapped).__name__ == "SinglePrecisionModel"
     assert wrapped.dtype == torch.float64
@@ -325,8 +353,8 @@ def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
     from calphy.queuekernel import run_calculation, setup_calculation
 
     (tmp_path / "models.py").write_text(SHIFT_FACTORY)
-    shifted = {"name": "./models.py:shifted", "kwargs": {"shift": 0.0123},
-               "device": "cpu"}
+    shifted = {"name": f"{tmp_path}/models.py:shifted",
+               "kwargs": {"shift": 0.0123}, "device": "cpu"}
     calc = build(mode="alchemy", model=[LJ_SPEC, shifted],
                  n_equilibration_steps=4000, n_switching_steps=200,
                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
@@ -336,8 +364,8 @@ def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
     with open(os.path.join(job.simfolder, "report.yaml")) as fin:
         report = yaml.safe_load(fin)
     assert report["results"]["free_energy"] == pytest.approx(0.0123, abs=1e-10)
-    assert [m["name"] for m in report["engine"]["model"]] == [LJ_NAME,
-                                                              "./models.py:shifted"]
+    assert [m["name"] for m in report["engine"]["model"]] == [
+        LJ_NAME, f"{tmp_path}/models.py:shifted"]
 
 
 @pytest.mark.slow
