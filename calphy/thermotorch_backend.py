@@ -50,7 +50,11 @@ callable returning a torch-sim model by its import path
       precision: float64    # float32 runs only the model in single precision
 
 ``device`` and ``dtype`` are passed to the callable when it has parameters of
-those names; ``kwargs`` are passed unchanged. File paths must be absolute. ``mode: alchemy`` takes a list of
+those names; ``kwargs`` are passed unchanged. A file in ``model.name`` must be
+given by its absolute path, and the named loaders refuse relative weight
+paths; a factory named by import path receives its ``kwargs`` as written, so
+any paths in them are its own to check -- give them absolute too. ``mode:
+alchemy`` takes a list of
 two such blocks, ``[initial, final]`` (``[base, added]`` with
 ``alchemy_coupling``).
 
@@ -274,7 +278,13 @@ def resolve_callable(name):
         try:
             from thermotorch.models.loaders import get
         except ImportError as exc:
-            raise ImportError(INSTALL_HINT) from exc
+            if importlib.util.find_spec("thermotorch") is None:
+                raise ImportError(INSTALL_HINT) from exc
+            raise ImportError(
+                "model.name %r is a loader name, but the installed thermotorch "
+                "has no named loaders (thermotorch.models.loaders: %s); "
+                "update it, or give the full import path of the factory"
+                % (name, exc)) from exc
         try:
             return get(name)
         except KeyError as exc:
@@ -340,7 +350,13 @@ def _load_file_module(path):
     path = expanded
     if not os.path.isfile(path):
         raise FileNotFoundError("model.name refers to %s, which does not exist" % path)
-    modname = "calphy_user_model_" + os.path.splitext(os.path.basename(path))[0]
+    # keyed by the full path: /a/models.py and /b/models.py (an alchemy pair)
+    # must not share one sys.modules entry
+    import hashlib
+
+    digest = hashlib.sha1(os.path.realpath(path).encode()).hexdigest()[:12]
+    modname = "calphy_user_model_%s_%s" % (
+        os.path.splitext(os.path.basename(path))[0], digest)
     spec = importlib.util.spec_from_file_location(modname, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[modname] = module

@@ -2262,8 +2262,12 @@ _example_:
 kwargs: {model: medium-omat-0}
 ```
 
-Keyword arguments passed to the loader or callable unchanged. The loaders
-require absolute paths for files. `device` and `dtype` are not allowed here:
+Keyword arguments passed to the loader or callable unchanged. The named loaders
+require absolute paths for weight files: a value with a directory part, a
+weights-file suffix (`.model`, `.pt`, `.pth`, `.yaml`, ...) or that names an
+existing file is taken as a path, and refused if it is relative. A callable
+given by import path receives its `kwargs` as written, so calphy cannot check
+the paths in them: give those absolute too. `device` and `dtype` are not allowed here:
 use [`device`](model_device) and [`precision`](model_precision).
 
 ---

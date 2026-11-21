@@ -125,6 +125,30 @@ def test_a_relative_file_path_is_refused(tmp_path):
         resolve_callable("./models.py:build")
 
 
+def test_two_files_of_one_name_stay_apart(tmp_path):
+    # an alchemy pair from /a/models.py and /b/models.py used to share one
+    # sys.modules entry, the second load overwriting the first
+    for d, value in (("a", 1), ("b", 2)):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "models.py").write_text(
+            f"def build():\n    return {value}\n")
+    first = resolve_callable(f"{tmp_path}/a/models.py:build")
+    second = resolve_callable(f"{tmp_path}/b/models.py:build")
+    import sys
+
+    assert first() == 1 and second() == 2
+    assert sys.modules[first.__module__] is not sys.modules[second.__module__]
+
+
+def test_an_old_thermotorch_is_not_called_missing(monkeypatch):
+    pytest.importorskip("thermotorch")
+    import sys
+
+    monkeypatch.setitem(sys.modules, "thermotorch.models.loaders", None)
+    with pytest.raises(ImportError, match="no named loaders"):
+        resolve_callable("mace")
+
+
 def test_bad_names_say_what_is_wrong():
     with pytest.raises(ValueError, match="name the function too"):
         resolve_callable("/abs/path/models.py")
