@@ -532,7 +532,8 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
         yaml.safe_dump({"calculations": blocks}, fout)
 
     _run_batch("input.yaml", [0, 1])
-    folders = sorted(d for d in os.listdir(".") if d.startswith("fe-"))
+    folders = sorted(d for d in os.listdir(".")
+                     if d.startswith("fe-") and os.path.isdir(d))
     assert len(folders) == 2
     fes = []
     for folder in folders:
@@ -544,7 +545,10 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
     assert [d for d in os.listdir(".") if d.startswith("thermotorch_grid_")]
 
     # the same job again: folders reused, nothing re-switched, same answers
+    legs = [os.path.join(f, "forward_1.dat") for f in folders]
+    stamps = [os.path.getmtime(p) for p in legs]
     _run_batch("input.yaml", [0, 1])
+    assert [os.path.getmtime(p) for p in legs] == stamps, "legs were re-run"
     for folder, fe in zip(folders, fes):
         with open(os.path.join(folder, "report.yaml")) as fin:
             assert yaml.safe_load(fin)["results"]["free_energy"] == pytest.approx(fe)
