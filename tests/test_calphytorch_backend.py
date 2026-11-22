@@ -1,7 +1,7 @@
-"""engine: thermotorch -- input checks, model loading, translation, one end-to-end run.
+"""engine: calphytorch -- input checks, model loading, translation, one end-to-end run.
 
-The validation and import-path tests need neither torch nor thermotorch. The
-model tests need torch + torch-sim, the translation and run tests thermotorch;
+The validation and import-path tests need neither torch nor calphytorch. The
+model tests need torch + torch-sim, the translation and run tests calphytorch;
 each group is skipped when its stack is not installed.
 """
 import os
@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from calphy.input import Calculation, TorchModel
-from calphy.thermotorch_backend import check_calculation, resolve_callable
+from calphy.calphytorch_backend import check_calculation, resolve_callable
 
 LJ_NAME = "torch_sim.models.lennard_jones.LennardJonesModel"
 LJ_KWARGS = {"sigma": 3.405, "epsilon": 0.0104, "cutoff": 7.5,
@@ -21,7 +21,7 @@ LJ_KWARGS = {"sigma": 3.405, "epsilon": 0.0104, "cutoff": 7.5,
 BASE = dict(
     element=["Ar"], mass=[39.948], mode="fe", temperature=40, pressure=0,
     lattice="fcc", lattice_constant=5.30, repeat=[3, 3, 3],
-    reference_phase="solid", engine="thermotorch",
+    reference_phase="solid", engine="calphytorch",
     model={"name": LJ_NAME, "kwargs": LJ_KWARGS, "device": "cpu"},
 )
 
@@ -45,9 +45,9 @@ def error_of(**extra):
 # --------------------------------------------------------------------------- #
 # input checks
 # --------------------------------------------------------------------------- #
-def test_thermotorch_input_needs_no_pair_style():
+def test_calphytorch_input_needs_no_pair_style():
     calc = build()
-    assert calc.engine == "thermotorch"
+    assert calc.engine == "calphytorch"
     assert calc.pair_style is None and calc.pair_coeff is None
     assert calc.model.name == LJ_NAME
     assert os.path.exists(calc.lattice)
@@ -67,7 +67,7 @@ def test_unsupported_modes_are_refused(mode):
     assert "mode" in error_of(mode=mode)
 
 
-def test_pressure_forms_thermotorch_cannot_run():
+def test_pressure_forms_calphytorch_cannot_run():
     assert "pscale" in error_of(pressure=[0, 1000])
     assert "fixed lattice" in error_of(pressure=None)
 
@@ -83,7 +83,7 @@ def test_settings_at_their_default_are_accepted():
 def test_model_block_is_refused_with_lammps():
     msg = error_of(engine="lammps", pair_style="lj/cut 7.5",
                    pair_coeff="* * 0.0104 3.405")
-    assert "only used with engine: thermotorch" in msg
+    assert "only used with engine: calphytorch" in msg
 
 
 def test_lammps_engine_still_requires_pair_style():
@@ -140,11 +140,11 @@ def test_two_files_of_one_name_stay_apart(tmp_path):
     assert sys.modules[first.__module__] is not sys.modules[second.__module__]
 
 
-def test_an_old_thermotorch_is_not_called_missing(monkeypatch):
-    pytest.importorskip("thermotorch")
+def test_an_old_calphytorch_is_not_called_missing(monkeypatch):
+    pytest.importorskip("calphytorch")
     import sys
 
-    monkeypatch.setitem(sys.modules, "thermotorch.models.loaders", None)
+    monkeypatch.setitem(sys.modules, "calphytorch.models.loaders", None)
     with pytest.raises(ImportError, match="no named loaders"):
         resolve_callable("mace")
 
@@ -160,9 +160,9 @@ def test_bad_names_say_what_is_wrong():
         resolve_callable("/no/such/dir/missing.py:build")
 
 
-def test_a_bare_name_is_a_thermotorch_loader():
-    pytest.importorskip("thermotorch")
-    from thermotorch.models.loaders import get
+def test_a_bare_name_is_a_calphytorch_loader():
+    pytest.importorskip("calphytorch")
+    from calphytorch.models.loaders import get
 
     assert resolve_callable("mace") is get("mace")
     assert resolve_callable("grace-fs") is get("grace-fs")
@@ -171,8 +171,8 @@ def test_a_bare_name_is_a_thermotorch_loader():
 
 
 def test_a_named_loader_builds_through_the_model_block():
-    pytest.importorskip("thermotorch")
-    from calphy.thermotorch_backend import build_model
+    pytest.importorskip("calphytorch")
+    from calphy.calphytorch_backend import build_model
 
     model = build_model(TorchModel(
         name="lj", device="cpu",
@@ -195,7 +195,7 @@ def test_a_missing_dependency_is_not_mistaken_for_a_bad_name(tmp_path, monkeypat
 def test_model_by_name_gets_device_and_dtype():
     torch = pytest.importorskip("torch")
     pytest.importorskip("torch_sim")
-    from calphy.thermotorch_backend import build_model
+    from calphy.calphytorch_backend import build_model
 
     model = build_model(TorchModel(name=LJ_NAME, kwargs=LJ_KWARGS, device="cpu"))
     assert model.dtype == torch.float64
@@ -204,7 +204,7 @@ def test_model_by_name_gets_device_and_dtype():
 
 def test_model_without_stress_is_refused():
     pytest.importorskip("torch_sim")
-    from calphy.thermotorch_backend import build_model
+    from calphy.calphytorch_backend import build_model
 
     kwargs = {**LJ_KWARGS, "compute_stress": False}
     with pytest.raises(ValueError, match="compute_stress"):
@@ -213,7 +213,7 @@ def test_model_without_stress_is_refused():
 
 def test_device_and_dtype_belong_outside_kwargs():
     pytest.importorskip("torch_sim")
-    from calphy.thermotorch_backend import build_model
+    from calphy.calphytorch_backend import build_model
 
     with pytest.raises(ValueError, match="model.device"):
         build_model(TorchModel(name=LJ_NAME, kwargs={**LJ_KWARGS, "device": "cpu"}))
@@ -222,8 +222,8 @@ def test_device_and_dtype_belong_outside_kwargs():
 def test_float32_model_needs_precision_float32(tmp_path):
     torch = pytest.importorskip("torch")
     pytest.importorskip("torch_sim")
-    pytest.importorskip("thermotorch")
-    from calphy.thermotorch_backend import build_model
+    pytest.importorskip("calphytorch")
+    from calphy.calphytorch_backend import build_model
 
     # a factory that ignores the dtype it is given
     (tmp_path / "f32.py").write_text(textwrap.dedent(f"""
@@ -243,34 +243,34 @@ def test_float32_model_needs_precision_float32(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# calphy Calculation -> thermotorch Calculation
+# calphy Calculation -> calphytorch Calculation
 # --------------------------------------------------------------------------- #
-def test_set_values_pass_unset_values_take_thermotorch_defaults():
-    pytest.importorskip("thermotorch")
-    from calphy.thermotorch_backend import to_thermotorch_calculation
+def test_set_values_pass_unset_values_take_calphytorch_defaults():
+    pytest.importorskip("calphytorch")
+    from calphy.calphytorch_backend import to_calphytorch_calculation
 
     calc = build(n_switching_steps=[2000, 3000], n_iterations=3,
                  md={"n_small_steps": 500, "seed": 5},
                  tolerance={"dissipation": 0.002},
-                 thermotorch={"pressure_convergence": "calphy", "cell_damping": 0.5})
-    tt = to_thermotorch_calculation(calc)
-    assert tt.lattice == calc.lattice
-    assert (tt.n_switching_steps, tt.n_sweep_steps, tt.n_iterations) == (2000, 3000, 3)
-    assert tt.md.n_small_steps == 500 and tt.seed == 5
-    assert tt.tolerance.dissipation == 0.002
-    assert tt.pressure_convergence == "calphy" and tt.md.cell_damping == 0.5
-    # unset: thermotorch keeps its structural checks on
-    assert tt.tolerance.solid_fraction == 0.7
+                 calphytorch={"pressure_convergence": "calphy", "cell_damping": 0.5})
+    ct =to_calphytorch_calculation(calc)
+    assert ct.lattice == calc.lattice
+    assert (ct.n_switching_steps, ct.n_sweep_steps, ct.n_iterations) == (2000, 3000, 3)
+    assert ct.md.n_small_steps == 500 and ct.seed == 5
+    assert ct.tolerance.dissipation == 0.002
+    assert ct.pressure_convergence == "calphy" and ct.md.cell_damping == 0.5
+    # unset: calphytorch keeps its structural checks on
+    assert ct.tolerance.solid_fraction == 0.7
 
-    assert to_thermotorch_calculation(build()).pressure_convergence == "sem"
+    assert to_calphytorch_calculation(build()).pressure_convergence == "sem"
 
 
 def test_ts_temperature_range():
-    pytest.importorskip("thermotorch")
-    from calphy.thermotorch_backend import to_thermotorch_calculation
+    pytest.importorskip("calphytorch")
+    from calphy.calphytorch_backend import to_calphytorch_calculation
 
-    tt = to_thermotorch_calculation(build(mode="ts", temperature=[30, 60]))
-    assert (tt._temperature, tt._temperature_stop) == (30.0, 60.0)
+    ct =to_calphytorch_calculation(build(mode="ts", temperature=[30, 60]))
+    assert (ct._temperature, ct._temperature_stop) == (30.0, 60.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -278,7 +278,7 @@ def test_ts_temperature_range():
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
 def test_fe_run_through_calphy_entry_points(tmp_path):
-    pytest.importorskip("thermotorch")
+    pytest.importorskip("calphytorch")
     from calphy.postprocessing import gather_results
     from calphy.queuekernel import run_calculation, setup_calculation
     from calphy.input import read_inputfile
@@ -286,7 +286,7 @@ def test_fe_run_through_calphy_entry_points(tmp_path):
     calc = build(n_equilibration_steps=4000, n_switching_steps=1000,
                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
                  tolerance={"pressure": 1e5, "dissipation": 0},
-                 thermotorch={"pressure_convergence": "calphy"})
+                 calphytorch={"pressure_convergence": "calphy"})
     job = run_calculation(setup_calculation(calc))
 
     with open(os.path.join(job.simfolder, "report.yaml")) as fin:
@@ -294,18 +294,18 @@ def test_fe_run_through_calphy_entry_points(tmp_path):
     for key in ("free_energy", "work", "einstein_crystal", "com_correction"):
         assert key in report["results"]
     assert -0.1 < report["results"]["free_energy"] < -0.05     # LJ argon, 40 K
-    assert report["engine"]["name"] == "thermotorch"
+    assert report["engine"]["name"] == "calphytorch"
     assert report["engine"]["model"]["name"] == LJ_NAME
     assert report["engine"]["seed"] == 7
 
     df = gather_results(str(tmp_path))
     assert df["free_energy"].iloc[0] == pytest.approx(report["results"]["free_energy"])
 
-    # the simfolder input reproduces the run's settings, thermotorch's
+    # the simfolder input reproduces the run's settings, calphytorch's
     # effective defaults included
     rerun = read_inputfile(os.path.join(job.simfolder, "input_file.yaml"))[0]
     assert rerun.tolerance.solid_fraction == 0.7
-    assert rerun.thermotorch.pressure_convergence == "calphy"
+    assert rerun.calphytorch.pressure_convergence == "calphy"
     assert rerun.md.seed == 7
 
 
@@ -373,7 +373,7 @@ def test_swaps_are_refused_outside_composition_scaling():
 
 @pytest.mark.slow
 def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
-    pytest.importorskip("thermotorch")
+    pytest.importorskip("calphytorch")
     from calphy.queuekernel import run_calculation, setup_calculation
 
     (tmp_path / "models.py").write_text(SHIFT_FACTORY)
@@ -383,7 +383,7 @@ def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
                  n_equilibration_steps=4000, n_switching_steps=200,
                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
                  tolerance={"pressure": 1e5},
-                 thermotorch={"pressure_convergence": "calphy"})
+                 calphytorch={"pressure_convergence": "calphy"})
     job = run_calculation(setup_calculation(calc))
     with open(os.path.join(job.simfolder, "report.yaml")) as fin:
         report = yaml.safe_load(fin)
@@ -394,12 +394,12 @@ def test_alchemy_through_calphy_recovers_a_constant_shift(tmp_path):
 
 @pytest.mark.slow
 def test_composition_scaling_through_calphy_is_the_mass_term(tmp_path):
-    pytest.importorskip("thermotorch")
+    pytest.importorskip("calphytorch")
     import numpy as np
     from calphy.queuekernel import run_calculation, setup_calculation
 
     # Kr given Ar's potential: only the mass differs, so F is the mass term
-    same = {"name": "thermotorch.models.BinaryLennardJonesModel",
+    same = {"name": "calphytorch.models.BinaryLennardJonesModel",
             "kwargs": {"element": ["Ar", "Kr"], "sigma": [3.405] * 3,
                        "epsilon": [0.0104] * 3, "cutoff": 7.5},
             "device": "cpu"}
@@ -419,7 +419,7 @@ def test_composition_scaling_through_calphy_is_the_mass_term(tmp_path):
                  n_equilibration_steps=4000, n_switching_steps=100,
                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
                  tolerance={"pressure": 1e5},
-                 thermotorch={"pressure_convergence": "calphy"})
+                 calphytorch={"pressure_convergence": "calphy"})
     job = run_calculation(setup_calculation(calc))
     with open(os.path.join(job.simfolder, "report.yaml")) as fin:
         report = yaml.safe_load(fin)
@@ -435,14 +435,14 @@ def test_composition_scaling_through_calphy_is_the_mass_term(tmp_path):
 # pressure coupling
 # --------------------------------------------------------------------------- #
 def test_aniso_coupling_is_passed_on():
-    pytest.importorskip("thermotorch")
-    from calphy.thermotorch_backend import to_thermotorch_calculation
+    pytest.importorskip("calphytorch")
+    from calphy.calphytorch_backend import to_calphytorch_calculation
 
-    assert to_thermotorch_calculation(
+    assert to_calphytorch_calculation(
         build(pressure_coupling="aniso")).pressure_coupling == "aniso"
-    assert to_thermotorch_calculation(build()).pressure_coupling == "iso"
+    assert to_calphytorch_calculation(build()).pressure_coupling == "iso"
     # calphy resolves a 3-component pressure to aniso
-    assert to_thermotorch_calculation(
+    assert to_calphytorch_calculation(
         build(pressure=[[0, 0, 0]])).pressure_coupling == "aniso"
 
 
@@ -451,31 +451,31 @@ def test_triclinic_coupling_is_refused():
 
 
 # --------------------------------------------------------------------------- #
-# batched jobs (thermotorch.batch)
+# batched jobs (calphytorch.batch)
 # --------------------------------------------------------------------------- #
 def _raw(**extra):
-    out = {**BASE, "thermotorch": {"batch": True}, **extra}
+    out = {**BASE, "calphytorch": {"batch": True}, **extra}
     return yaml.safe_load(yaml.safe_dump(out))
 
 
 def test_batch_groups_join_blocks_that_differ_only_in_temperature():
-    from calphy.thermotorch_backend import batch_groups
+    from calphy.calphytorch_backend import batch_groups
 
     raw = [
         _raw(temperature=40),
         _raw(temperature=60),
         _raw(temperature=80, n_switching_steps=999),     # other protocol
-        _raw(temperature=50, thermotorch={"batch": False}),
+        _raw(temperature=50, calphytorch={"batch": False}),
         _raw(temperature=70),
         _raw(mode="ts", temperature=[30, 60]),          # ts is not batched
         _raw(temperature=90, reference_phase="liquid"),
-        {**BASE, "temperature": 45},                     # no thermotorch block
+        {**BASE, "temperature": 45},                     # no calphytorch block
     ]
     assert batch_groups(raw) == [[0, 1, 4], [2], [3], [5], [6], [7]]
 
 
 def test_composition_scaling_batches_across_output_compositions():
-    from calphy.thermotorch_backend import batch_groups
+    from calphy.calphytorch_backend import batch_groups
 
     def cs(out, t=40):
         return _raw(mode="composition_scaling", temperature=t,
@@ -497,7 +497,7 @@ def test_a_batch_is_submitted_as_one_job(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pq.Local, "submit", submit)
     blocks = [_raw(temperature=t) for t in (40, 60, 80)]
-    blocks.append(_raw(temperature=50, thermotorch={"batch": False}))
+    blocks.append(_raw(temperature=50, calphytorch={"batch": False}))
     with open("input.yaml", "w") as fout:
         yaml.safe_dump({"calculations": blocks}, fout)
     run_jobs("input.yaml")
@@ -506,7 +506,7 @@ def test_a_batch_is_submitted_as_one_job(tmp_path, monkeypatch):
 
 
 def test_run_batched_refuses_calculations_that_do_not_belong_together():
-    from calphy.thermotorch_backend import run_batched
+    from calphy.calphytorch_backend import run_batched
 
     raw = [_raw(temperature=40), _raw(temperature=60, n_switching_steps=999)]
     calcs = [build(**{k: v for k, v in r.items() if k in ("temperature",)})
@@ -520,13 +520,13 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
     """Two temperatures through calphy_kernel -k 0,1: one grid, one report
     per calculation; running the same job again resumes from the grid's
     checkpoint in the same folders instead of refusing them."""
-    pytest.importorskip("thermotorch")
+    pytest.importorskip("calphytorch")
     from calphy.queuekernel import _run_batch
 
     common = dict(n_equilibration_steps=2000, n_switching_steps=800,
                   md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
                   tolerance={"pressure": 1e5, "dissipation": 0},
-                  thermotorch={"batch": True, "pressure_convergence": "calphy"})
+                  calphytorch={"batch": True, "pressure_convergence": "calphy"})
     blocks = [_raw(temperature=t, **common) for t in (30, 50)]
     with open("input.yaml", "w") as fout:
         yaml.safe_dump({"calculations": blocks}, fout)
@@ -539,10 +539,10 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
     for folder in folders:
         with open(os.path.join(folder, "report.yaml")) as fin:
             report = yaml.safe_load(fin)
-        assert report["engine"]["name"] == "thermotorch"
+        assert report["engine"]["name"] == "calphytorch"
         fes.append(report["results"]["free_energy"])
     assert all(-0.1 < f < -0.04 for f in fes)
-    assert [d for d in os.listdir(".") if d.startswith("thermotorch_grid_")]
+    assert [d for d in os.listdir(".") if d.startswith("calphytorch_grid_")]
 
     # the same job again: folders reused, nothing re-switched, same answers
     legs = [os.path.join(f, "forward_1.dat") for f in folders]

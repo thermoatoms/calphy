@@ -22,27 +22,27 @@ DOI: 10.1103/PhysRevMaterials.5.103801
 For more information contact:
 sarath.menon@ruhr-uni-bochum.de
 """
-"""thermotorch engine: run calculations on torch-native potentials.
+"""calphytorch engine: run calculations on torch-native potentials.
 
 Modes ``fe``, ``ts``, ``alchemy`` (and ``alchemy_coupling``) and
 ``composition_scaling`` (with label swaps).
 
-With ``engine: thermotorch`` a calculation is not driven through LAMMPS at all.
+With ``engine: calphytorch`` a calculation is not driven through LAMMPS at all.
 calphy still reads and validates the input, builds the structure and creates
 the simulation folder; the calculation itself is handed to
-`thermotorch <https://github.com/thermoatoms/thermotorch>`_, which re-hosts
+`calphytorch <https://github.com/thermoatoms/calphytorch>`_, which re-hosts
 calphy's Frenkel-Ladd / Uhlenbeck-Ford / reversible-scaling / alchemical
 protocols on torch-sim and writes the same output files (``report.yaml``,
 ``forward_N.dat``/``backward_N.dat``, ``temperature_sweep.dat``), so
 :func:`calphy.postprocessing.gather_results` reads the results unchanged.
 
-The potential is named in the ``model`` block: one of thermotorch's loaders by
+The potential is named in the ``model`` block: one of calphytorch's loaders by
 name (``mace``, ``nequip``, ``sevennet``, ``mattersim``, ``pet-mad``,
-``grace``, ``grace-fs``, ``lj``; ``thermotorch.models.loaders``), or any other
+``grace``, ``grace-fs``, ``lj``; ``calphytorch.models.loaders``), or any other
 callable returning a torch-sim model by its import path
 (``package.module.Factory`` or ``/absolute/path/to/file.py:function``)::
 
-    engine: thermotorch
+    engine: calphytorch
     model:
       name: mace
       kwargs: {model: medium-omat-0}
@@ -58,13 +58,13 @@ alchemy`` takes a list of
 two such blocks, ``[initial, final]`` (``[base, added]`` with
 ``alchemy_coupling``).
 
-Only settings thermotorch honours are accepted: anything else set in the input
+Only settings calphytorch honours are accepted: anything else set in the input
 (``pair_style``, ``nose_hoover``, ``monte_carlo``, ...) is refused with an
 error rather than silently ignored (:func:`check_calculation`). Settings left
-unset take thermotorch's defaults, which differ from calphy's in two deliberate
+unset take calphytorch's defaults, which differ from calphy's in two deliberate
 places: ``tolerance.solid_fraction``/``liquid_fraction`` keep the structural
-checks on, and the pressure convergence uses thermotorch's standard-error test
-(``thermotorch: {pressure_convergence: calphy}`` restores calphy's).
+checks on, and the pressure convergence uses calphytorch's standard-error test
+(``calphytorch: {pressure_convergence: calphy}`` restores calphy's).
 
 The torch stack is imported only when a calculation actually runs, so this
 module costs nothing to import and validation works without torch installed.
@@ -83,24 +83,24 @@ __all__ = [
     "check_calculation",
     "resolve_callable",
     "build_model",
-    "to_thermotorch_calculation",
-    "ThermotorchJob",
+    "to_calphytorch_calculation",
+    "CalphytorchJob",
 ]
 
 INSTALL_HINT = (
-    "engine 'thermotorch' needs the thermotorch package: "
-    "pip install git+https://github.com/thermoatoms/thermotorch"
+    "engine 'calphytorch' needs the calphytorch package: "
+    "pip install git+https://github.com/thermoatoms/calphytorch"
 )
 
-#: Modes thermotorch implements.
+#: Modes calphytorch implements.
 SUPPORTED_MODES = ("fe", "ts", "alchemy", "composition_scaling")
 
-#: Top-level Calculation fields that may be set with engine 'thermotorch'.
+#: Top-level Calculation fields that may be set with engine 'calphytorch'.
 #: An allow-list, not a deny-list: a field calphy adds later is refused until
-#: someone decides how thermotorch should honour it, instead of being ignored.
+#: someone decides how calphytorch should honour it, instead of being ignored.
 ALLOWED_FIELDS = frozenset({
     # engine selection
-    "engine", "model", "thermotorch",
+    "engine", "model", "calphytorch",
     # bookkeeping set by the input reader
     "kernel", "inputfile", "n_elements",
     # system and state point
@@ -128,7 +128,7 @@ ALLOWED_BLOCK_FIELDS = {
         "lattice_constant", "spring_constant", "solid_fraction",
         "liquid_fraction", "dissipation", "pressure",
     }),
-    # forward/reverse_swap_types are LAMMPS type numbers; thermotorch derives
+    # forward/reverse_swap_types are LAMMPS type numbers; calphytorch derives
     # the swap groups from the transformation itself
     "monte_carlo": frozenset({"n_steps", "n_swaps", "allow_all_swaps"}),
     "composition_scaling": frozenset({"output_chemical_composition",
@@ -152,10 +152,10 @@ def _differs_from_default(obj, name):
 
 
 def check_calculation(calc):
-    """Refuse a calculation thermotorch cannot run as specified.
+    """Refuse a calculation calphytorch cannot run as specified.
 
     Called from :class:`calphy.input.Calculation` validation when
-    ``engine == 'thermotorch'``, before the validator changes any field.
+    ``engine == 'calphytorch'``, before the validator changes any field.
     A setting outside :data:`ALLOWED_FIELDS` / :data:`ALLOWED_BLOCK_FIELDS` is
     refused when it differs from its default; at its default it has no effect
     either way. That keeps full dumps of an input (``input_file.yaml`` in a
@@ -172,11 +172,11 @@ def check_calculation(calc):
     if mode == "fe-qtb":
         problems.append(
             "mode 'fe-qtb': the quantum thermal bath is a LAMMPS fix; "
-            "thermotorch runs classical Langevin dynamics only"
+            "calphytorch runs classical Langevin dynamics only"
         )
     elif mode not in SUPPORTED_MODES:
         problems.append(
-            "mode %r: thermotorch implements %s only"
+            "mode %r: calphytorch implements %s only"
             % (mode, " and ".join(SUPPORTED_MODES))
         )
 
@@ -189,7 +189,7 @@ def check_calculation(calc):
         for field in sorted(set(type(sub).model_fields) - allowed):
             if _differs_from_default(sub, field):
                 problems.append(
-                    "%s.%s: has no thermotorch equivalent" % (block, field)
+                    "%s.%s: has no calphytorch equivalent" % (block, field)
                 )
 
     models = calc.model
@@ -203,7 +203,7 @@ def check_calculation(calc):
         problems.append("model: give one model; a list of two is for mode alchemy")
     if calc.monte_carlo.n_swaps > 0 and mode != "composition_scaling":
         problems.append(
-            "monte_carlo.n_swaps: with engine 'thermotorch' swaps apply to "
+            "monte_carlo.n_swaps: with engine 'calphytorch' swaps apply to "
             "mode composition_scaling only"
         )
 
@@ -218,22 +218,22 @@ def check_calculation(calc):
         if shape == (2,) or shape == (2, 3):
             problems.append(
                 "pressure: a [start, stop] pressure range is a pscale input; "
-                "thermotorch runs fe and ts at a single pressure"
+                "calphytorch runs fe and ts at a single pressure"
             )
         # (1, 3): calphy resolves it to pressure_coupling "aniso", which
-        # thermotorch runs on an orthogonal cell
+        # calphytorch runs on an orthogonal cell
 
     coupling = calc.pressure_coupling
     if coupling is not None and str(coupling).lower() == "tri":
         problems.append(
             "pressure_coupling: 'tri' (triclinic) is not available -- "
-            "thermotorch's anisotropic barostat needs an orthogonal cell; use "
+            "calphytorch's anisotropic barostat needs an orthogonal cell; use "
             "'aniso'"
         )
 
     if problems:
         raise ValueError(
-            "engine 'thermotorch' cannot honour the following input "
+            "engine 'calphytorch' cannot honour the following input "
             "settings:\n  - " + "\n  - ".join(problems)
             + "\nRemove them, or use engine 'lammps'."
         )
@@ -249,8 +249,8 @@ def _why_refused(field):
         return "selects how LAMMPS is run; no LAMMPS runs with this engine"
     if field in ("nose_hoover", "berendsen", "equilibration_control",
                  "quantum_thermal_bath"):
-        return "thermotorch uses a Langevin thermostat and barostat throughout"
-    return "has no thermotorch equivalent"
+        return "calphytorch uses a Langevin thermostat and barostat throughout"
+    return "has no calphytorch equivalent"
 
 
 # --------------------------------------------------------------------------- #
@@ -261,8 +261,8 @@ def resolve_callable(name):
 
     Accepted forms:
 
-    * ``mace``, ``grace-fs``, ... -- a bare name: one of thermotorch's named
-      loaders (``thermotorch.models.loaders``);
+    * ``mace``, ``grace-fs``, ... -- a bare name: one of calphytorch's named
+      loaders (``calphytorch.models.loaders``);
     * ``package.module.attribute`` -- the longest importable module prefix is
       imported and the rest is looked up as (nested) attributes;
     * ``package.module:attribute`` -- explicit module/attribute split;
@@ -276,13 +276,13 @@ def resolve_callable(name):
 
     if not any(c in name for c in ".:/"):
         try:
-            from thermotorch.models.loaders import get
+            from calphytorch.models.loaders import get
         except ImportError as exc:
-            if importlib.util.find_spec("thermotorch") is None:
+            if importlib.util.find_spec("calphytorch") is None:
                 raise ImportError(INSTALL_HINT) from exc
             raise ImportError(
-                "model.name %r is a loader name, but the installed thermotorch "
-                "has no named loaders (thermotorch.models.loaders: %s); "
+                "model.name %r is a loader name, but the installed calphytorch "
+                "has no named loaders (calphytorch.models.loaders: %s); "
                 "update it, or give the full import path of the factory"
                 % (name, exc)) from exc
         try:
@@ -440,8 +440,8 @@ def build_model(spec):
 def check_model(model, precision="float64", origin="the model"):
     """Check a torch-sim model before any MD runs on it.
 
-    thermotorch integrates in float64 throughout; a float32 model is accepted
-    only under ``precision: float32``, where it is wrapped in thermotorch's
+    calphytorch integrates in float64 throughout; a float32 model is accepted
+    only under ``precision: float32``, where it is wrapped in calphytorch's
     ``SinglePrecisionModel`` (state, integrator and work stay float64).
     """
     torch = _torch()
@@ -455,7 +455,7 @@ def check_model(model, precision="float64", origin="the model"):
         raise ValueError("%s does not compute forces (compute_forces=False)" % origin)
     if not getattr(model, "compute_stress", False):
         raise ValueError(
-            "%s does not compute stress (compute_stress=False); thermotorch "
+            "%s does not compute stress (compute_stress=False); calphytorch "
             "reads the pressure in every averaging stage. Pass "
             "compute_stress: true in model.kwargs" % origin
         )
@@ -468,12 +468,12 @@ def check_model(model, precision="float64", origin="the model"):
                 "nothing; remove it (or make the callable return a float32 "
                 "model)" % (origin, dtype)
             )
-        from thermotorch.models.precision import SinglePrecisionModel
+        from calphytorch.models.precision import SinglePrecisionModel
 
         return SinglePrecisionModel(model)
     if dtype != torch.float64:
         raise ValueError(
-            "%s declares dtype %s; thermotorch integrates in float64. Return "
+            "%s declares dtype %s; calphytorch integrates in float64. Return "
             "a float64 model, or set model.precision: float32 to run only "
             "the model in single precision" % (origin, dtype)
         )
@@ -481,7 +481,7 @@ def check_model(model, precision="float64", origin="the model"):
 
 
 # --------------------------------------------------------------------------- #
-# calphy Calculation -> thermotorch Calculation
+# calphy Calculation -> calphytorch Calculation
 # --------------------------------------------------------------------------- #
 def _user_set(block, allowed=None):
     """The fields of an option block the user actually set."""
@@ -491,16 +491,16 @@ def _user_set(block, allowed=None):
     return {name: getattr(block, name) for name in names}
 
 
-def to_thermotorch_calculation(calc, seed=None):
-    """Translate a validated calphy Calculation into thermotorch's.
+def to_calphytorch_calculation(calc, seed=None):
+    """Translate a validated calphy Calculation into calphytorch's.
 
-    Values the user set are passed on; values left unset take thermotorch's
+    Values the user set are passed on; values left unset take calphytorch's
     defaults. The temperature and pressure are calphy's resolved ones (so a
     temperature guessed from the melting point carries over), and the lattice
     is the structure file calphy wrote for this calculation.
     """
     try:
-        from thermotorch.input import Calculation as TTCalculation
+        from calphytorch.input import Calculation as TTCalculation
     except ImportError as exc:
         raise ImportError(INSTALL_HINT) from exc
 
@@ -549,7 +549,7 @@ def to_thermotorch_calculation(calc, seed=None):
     if mc:
         data["monte_carlo"] = mc
 
-    options = calc.thermotorch
+    options = calc.calphytorch
     if options is not None:
         for name in ("pressure_convergence", "melt_t_factor", "n_melt_steps"):
             value = getattr(options, name)
@@ -565,8 +565,8 @@ def to_thermotorch_calculation(calc, seed=None):
 # --------------------------------------------------------------------------- #
 # The job
 # --------------------------------------------------------------------------- #
-class ThermotorchJob:
-    """A calphy calculation run by thermotorch.
+class CalphytorchJob:
+    """A calphy calculation run by calphytorch.
 
     Plays the role of calphy's ``Solid``/``Liquid`` job objects: build it from
     a validated :class:`calphy.input.Calculation`, then call :meth:`run` (or
@@ -584,9 +584,9 @@ class ThermotorchJob:
     """
 
     def __init__(self, calculation, simfolder=None, model=None, log_to_screen=False):
-        if calculation.engine != "thermotorch":
+        if calculation.engine != "calphytorch":
             raise ValueError(
-                "ThermotorchJob needs engine 'thermotorch', got %r" % calculation.engine
+                "CalphytorchJob needs engine 'calphytorch', got %r" % calculation.engine
             )
         self.calc = copy.deepcopy(calculation)
         self.log_to_screen = log_to_screen
@@ -597,14 +597,14 @@ class ThermotorchJob:
             self.calc.md.seed = int(np.random.SeedSequence().entropy % (2**31 - 2)) + 1
 
         # everything that can fail on the input fails before a folder exists
-        self.tt_calc = to_thermotorch_calculation(self.calc)
+        self.ct_calc = to_calphytorch_calculation(self.calc)
         n_models = 2 if self.calc.mode == "alchemy" else 1
         if model is None:
             specs = self.calc.model
             specs = specs if isinstance(specs, list) else [specs]
             if len(specs) != n_models or any(s is None or not s.name for s in specs):
                 raise ValueError(
-                    "engine 'thermotorch' needs a 'model' block naming the "
+                    "engine 'calphytorch' needs a 'model' block naming the "
                     "potential, e.g. model: {name: package.module.Factory}"
                     + ("; mode alchemy needs a list of two" if n_models == 2 else "")
                 )
@@ -630,29 +630,29 @@ class ThermotorchJob:
     # calphy's job objects expose these
     @property
     def engine(self):
-        return "thermotorch"
+        return "calphytorch"
 
     def _write_input(self):
-        """Write ``input_file.yaml``, recording the values thermotorch uses.
+        """Write ``input_file.yaml``, recording the values calphytorch uses.
 
-        Unset fields take thermotorch's defaults, some of which differ from
+        Unset fields take calphytorch's defaults, some of which differ from
         calphy's (``tolerance.solid_fraction``, ``pressure_convergence``, ...).
         The dump carries the effective values, so rerunning it reproduces this
         run rather than one with calphy's defaults.
         """
-        tt = self.tt_calc
+        ct =self.ct_calc
         for name in ALLOWED_BLOCK_FIELDS["md"] - {"seed"}:
-            setattr(self.calc.md, name, getattr(tt.md, name))
+            setattr(self.calc.md, name, getattr(ct.md, name))
         for name in ALLOWED_BLOCK_FIELDS["tolerance"]:
-            setattr(self.calc.tolerance, name, getattr(tt.tolerance, name))
-        from calphy.input import ThermotorchOptions
+            setattr(self.calc.tolerance, name, getattr(ct.tolerance, name))
+        from calphy.input import CalphytorchOptions
 
-        given = self.calc.thermotorch or ThermotorchOptions()
-        self.calc.thermotorch = ThermotorchOptions(
-            pressure_convergence=tt.pressure_convergence,
-            melt_t_factor=tt.melt_t_factor,
-            n_melt_steps=tt.n_melt_steps,
-            cell_damping=tt.md.cell_damping,
+        given = self.calc.calphytorch or CalphytorchOptions()
+        self.calc.calphytorch = CalphytorchOptions(
+            pressure_convergence=ct.pressure_convergence,
+            melt_t_factor=ct.melt_t_factor,
+            n_melt_steps=ct.n_melt_steps,
+            cell_damping=ct.md.cell_damping,
             batch=given.batch,
             max_switch_systems=given.max_switch_systems,
             checkpoint_every=given.checkpoint_every,
@@ -671,35 +671,35 @@ class ThermotorchJob:
         }[self.calc.mode]()
 
     def run_alchemy(self):
-        from thermotorch.routines import routine_alchemy
+        from calphytorch.routines import routine_alchemy
 
-        self.phase = routine_alchemy(self.tt_calc, simfolder=self.simfolder,
+        self.phase = routine_alchemy(self.ct_calc, simfolder=self.simfolder,
                                      model=self.model,
                                      log_to_screen=self.log_to_screen)
         self._record_engine()
         return self
 
     def run_composition_scaling(self):
-        from thermotorch.routines import routine_composition_scaling
+        from calphytorch.routines import routine_composition_scaling
 
         self.phase = routine_composition_scaling(
-            self.tt_calc, simfolder=self.simfolder, model=self.model,
+            self.ct_calc, simfolder=self.simfolder, model=self.model,
             log_to_screen=self.log_to_screen)
         self._record_engine()
         return self
 
     def run_fe(self):
-        from thermotorch.routines import routine_fe
+        from calphytorch.routines import routine_fe
 
-        self.phase = routine_fe(self.tt_calc, simfolder=self.simfolder,
+        self.phase = routine_fe(self.ct_calc, simfolder=self.simfolder,
                                 model=self.model, log_to_screen=self.log_to_screen)
         self._record_engine()
         return self
 
     def run_ts(self):
-        from thermotorch.routines import routine_ts
+        from calphytorch.routines import routine_ts
 
-        self.phase = routine_ts(self.tt_calc, simfolder=self.simfolder,
+        self.phase = routine_ts(self.ct_calc, simfolder=self.simfolder,
                                 model=self.model, log_to_screen=self.log_to_screen)
         self._record_engine()
         return self
@@ -709,13 +709,13 @@ class ThermotorchJob:
         reportfile = os.path.join(self.simfolder, "report.yaml")
         with open(reportfile) as fin:
             report = yaml.safe_load(fin) or {}
-        report["engine"] = _yaml_safe(engine_record(self.tt_calc, self._model_record))
+        report["engine"] = _yaml_safe(engine_record(self.ct_calc, self._model_record))
         with open(reportfile, "w") as fout:
             yaml.dump(report, fout)
         self.report = report
 
 
-#: Modes a batched job can run as one grid (thermotorch's routine_fe_grid and
+#: Modes a batched job can run as one grid (calphytorch's routine_fe_grid and
 #: routine_alchemy_grid). ts sweeps each point on its own.
 BATCH_MODES = ("fe", "alchemy", "composition_scaling")
 
@@ -735,15 +735,15 @@ def _batch_key(raw):
 
 
 def _batchable(raw):
-    tt = raw.get("thermotorch") or {}
-    return (raw.get("engine") == "thermotorch" and bool(tt.get("batch"))
+    ct =raw.get("calphytorch") or {}
+    return (raw.get("engine") == "calphytorch" and bool(ct.get("batch"))
             and raw.get("mode", "fe") in BATCH_MODES)
 
 
 def batch_groups(raw_calculations):
     """Indices of the calculation blocks, grouped into the jobs to submit.
 
-    Blocks with ``engine: thermotorch`` and ``thermotorch: {batch: true}``
+    Blocks with ``engine: calphytorch`` and ``calphytorch: {batch: true}``
     in a batchable mode are grouped with every other such block that agrees
     on everything but temperature (and output composition); every other
     block is a job of its own. Groups keep input order."""
@@ -762,7 +762,7 @@ def batch_groups(raw_calculations):
 
 
 def run_batched(calculations, raw_calculations=None, log_to_screen=False):
-    """Run several calculations as one thermotorch grid.
+    """Run several calculations as one calphytorch grid.
 
     ``calculations`` are validated :class:`calphy.input.Calculation` objects
     of one batch group (:func:`batch_groups`); ``raw_calculations``, their
@@ -772,9 +772,9 @@ def run_batched(calculations, raw_calculations=None, log_to_screen=False):
     Every calculation keeps its own folder, ``input_file.yaml`` and
     ``report.yaml``.
 
-    The grid checkpoints into ``thermotorch_grid_<hash>`` next to the
+    The grid checkpoints into ``calphytorch_grid_<hash>`` next to the
     calculation folders (averaging, replica cells, every switching chunk;
-    ``thermotorch.checkpoint_every`` steps apart within a chunk) and stops
+    ``calphytorch.checkpoint_every`` steps apart within a chunk) and stops
     cleanly at SIGUSR1 -- the wall-clock warning a scheduler can send.
     Running the same job again resumes from there, reusing the folders.
 
@@ -791,7 +791,7 @@ def run_batched(calculations, raw_calculations=None, log_to_screen=False):
         if len(keys) != 1 or not all(_batchable(r) for r in raw_calculations):
             raise ValueError(
                 "these calculations cannot run as one batch: they must all set "
-                "engine thermotorch and thermotorch.batch, use mode %s, and "
+                "engine calphytorch and calphytorch.batch, use mode %s, and "
                 "agree on everything but temperature (and output composition)"
                 % "/".join(BATCH_MODES))
     mode = calcs[0].mode
@@ -801,30 +801,30 @@ def run_batched(calculations, raw_calculations=None, log_to_screen=False):
     folders = [c.get_folder_name() for c in calcs]
     tag = hashlib.sha1("\n".join(folders).encode()).hexdigest()[:10]
     ckdir = os.path.join(os.path.dirname(os.path.abspath(folders[0])),
-                         "thermotorch_grid_" + tag)
+                         "calphytorch_grid_" + tag)
     resuming = os.path.isdir(ckdir)
 
     def folder_for(name):
         # a resumed grid continues in the folders it wrote
         return name if resuming and os.path.isdir(name) else None
 
-    first = ThermotorchJob(calcs[0], simfolder=folder_for(folders[0]),
+    first = CalphytorchJob(calcs[0], simfolder=folder_for(folders[0]),
                            log_to_screen=log_to_screen)
     jobs = [first]
     for c, name in zip(calcs[1:], folders[1:]):
-        job = ThermotorchJob(c, simfolder=folder_for(name), model=first.model,
+        job = CalphytorchJob(c, simfolder=folder_for(name), model=first.model,
                              log_to_screen=log_to_screen)
         job._model_record = first._model_record
         jobs.append(job)
     os.makedirs(ckdir, exist_ok=True)
 
-    from thermotorch.checkpoint import install_wall_clock_handler
-    from thermotorch.routines import routine_alchemy_grid, routine_fe_grid
+    from calphytorch.checkpoint import install_wall_clock_handler
+    from calphytorch.routines import routine_alchemy_grid, routine_fe_grid
 
     install_wall_clock_handler()
-    opts = calcs[0].thermotorch
+    opts = calcs[0].calphytorch
     grid = routine_fe_grid if mode == "fe" else routine_alchemy_grid
-    phases = grid([j.tt_calc for j in jobs], [j.simfolder for j in jobs],
+    phases = grid([j.ct_calc for j in jobs], [j.simfolder for j in jobs],
                   first.model, log_to_screen=log_to_screen,
                   max_switch_systems=opts.max_switch_systems,
                   checkpoint_dir=ckdir, checkpoint_every=opts.checkpoint_every)
@@ -843,8 +843,8 @@ def run_batched(calculations, raw_calculations=None, log_to_screen=False):
     return jobs
 
 
-def engine_record(tt_calc, model_record):
-    """Versions and settings that identify how a thermotorch result was made."""
+def engine_record(ct_calc, model_record):
+    """Versions and settings that identify how a calphytorch result was made."""
     from importlib.metadata import PackageNotFoundError, version
 
     def _version(pkg):
@@ -854,13 +854,13 @@ def engine_record(tt_calc, model_record):
             return None
 
     return {
-        "name": "thermotorch",
-        "thermotorch": _version("thermotorch"),
+        "name": "calphytorch",
+        "calphytorch": _version("calphytorch"),
         "torch_sim": _version("torch-sim-atomistic"),
         "torch": _version("torch"),
         "model": model_record,
-        "pressure_convergence": tt_calc.pressure_convergence,
-        "seed": tt_calc.seed,
+        "pressure_convergence": ct_calc.pressure_convergence,
+        "seed": ct_calc.seed,
     }
 
 

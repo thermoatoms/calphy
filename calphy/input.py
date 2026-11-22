@@ -576,13 +576,13 @@ class MaterialsProject(_StrictInput, title="Input options for materials project"
         return value
 
 
-class TorchModel(_StrictInput, title="Torch model for engine thermotorch"):
-    """The potential for ``engine: thermotorch``: any callable returning a torch-sim model.
+class TorchModel(_StrictInput, title="Torch model for engine calphytorch"):
+    """The potential for ``engine: calphytorch``: any callable returning a torch-sim model.
 
     ``name`` is its full import path (``package.module.attribute``,
     ``package.module:attribute`` or ``path/to/file.py:attribute``); it is
     called with ``kwargs``, plus ``device`` and ``dtype`` when it has
-    parameters of those names.  See :mod:`calphy.thermotorch_backend`.
+    parameters of those names.  See :mod:`calphy.calphytorch_backend`.
     """
 
     name: Annotated[str, Field(default="")]
@@ -591,10 +591,10 @@ class TorchModel(_StrictInput, title="Torch model for engine thermotorch"):
     precision: Annotated[Literal["float64", "float32"], Field(default="float64")]
 
 
-class ThermotorchOptions(_StrictInput, title="Settings only engine thermotorch has"):
-    """Unset values take thermotorch's defaults."""
+class CalphytorchOptions(_StrictInput, title="Settings only engine calphytorch has"):
+    """Unset values take calphytorch's defaults."""
 
-    # "sem" (thermotorch's default) or "calphy" (calphy's own test)
+    # "sem" (calphytorch's default) or "calphy" (calphy's own test)
     pressure_convergence: Annotated[
         Optional[Literal["sem", "calphy"]], Field(default=None)
     ]
@@ -697,13 +697,13 @@ class Calculation(_StrictInput, title="Main input class"):
     ]
 
     script_mode: Annotated[bool, Field(default=False)]
-    # "lammps" (default) or "thermotorch": run fe/ts on a torch-native
-    # potential through thermotorch instead of LAMMPS (calphy.thermotorch_backend)
+    # "lammps" (default) or "calphytorch": run fe/ts on a torch-native
+    # potential through calphytorch instead of LAMMPS (calphy.calphytorch_backend)
     engine: Annotated[str, Field(default="lammps")]
     # one model; for mode alchemy two: [initial, final], or [base, added]
     # with alchemy_coupling
     model: Optional[Union[TorchModel, List[TorchModel]]] = None
-    thermotorch: Optional[ThermotorchOptions] = None
+    calphytorch: Optional[CalphytorchOptions] = None
     execution_mode: Annotated[str, Field(default="executable")]
     lammps_executable: Annotated[Union[str, None], Field(default=None)]
     mpi_executable: Annotated[Union[str, None], Field(default=None)]
@@ -751,27 +751,27 @@ class Calculation(_StrictInput, title="Main input class"):
                 "from the input file."
             )
 
-        if self.engine not in ("lammps", "thermotorch"):
+        if self.engine not in ("lammps", "calphytorch"):
             raise ValueError(
-                "engine must be 'lammps' (the default) or 'thermotorch', got %r"
+                "engine must be 'lammps' (the default) or 'calphytorch', got %r"
                 % self.engine
             )
-        if self.engine == "thermotorch":
+        if self.engine == "calphytorch":
             # before anything below changes a field: refuses every setting
-            # thermotorch cannot honour, comparing against the defaults
-            from calphy.thermotorch_backend import check_calculation
+            # calphytorch cannot honour, comparing against the defaults
+            from calphy.calphytorch_backend import check_calculation
 
             check_calculation(self)
         else:
-            for key in ("model", "thermotorch"):
+            for key in ("model", "calphytorch"):
                 if getattr(self, key) is not None:
                     raise ValueError(
-                        "%s is only used with engine: thermotorch" % key
+                        "%s is only used with engine: calphytorch" % key
                     )
             if self.pair_style is None or self.pair_coeff is None:
                 raise ValueError(
                     "pair_style and pair_coeff are required (or set engine: "
-                    "thermotorch and give a torch model)"
+                    "calphytorch and give a torch model)"
                 )
 
         if self.execution_mode not in ("executable", "library"):

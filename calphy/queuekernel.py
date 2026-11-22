@@ -66,10 +66,10 @@ def setup_calculation(calc):
     job: Phase class
         job class
     """
-    if calc.engine == "thermotorch":
-        from calphy.thermotorch_backend import ThermotorchJob
+    if calc.engine == "calphytorch":
+        from calphy.calphytorch_backend import CalphytorchJob
 
-        return ThermotorchJob(calculation=calc)
+        return CalphytorchJob(calculation=calc)
 
     # now we need to modify the routines
     if calc.mode == "melting_temperature":
@@ -103,7 +103,7 @@ def run_calculation(job):
     -------
     job : Phase class
     """
-    if getattr(job, "engine", "lammps") == "thermotorch":
+    if getattr(job, "engine", "lammps") == "calphytorch":
         return job.run()
 
     if job.calc.mode == "fe":
@@ -142,8 +142,8 @@ def _load_calculation(inputfile, data, kernel):
 
 
 def _run_batch(inputfile, kernels, log_to_screen=False):
-    """Run the calculation blocks ``kernels`` as one thermotorch grid."""
-    from calphy.thermotorch_backend import run_batched
+    """Run the calculation blocks ``kernels`` as one calphytorch grid."""
+    from calphy.calphytorch_backend import run_batched
 
     with open(inputfile, "r") as fin:
         data = yaml.safe_load(fin)
@@ -166,7 +166,7 @@ def main():
         required=True,
         type=str,
         help="kernel number of the calculation to be run; a comma-separated "
-        "list runs a thermotorch batch (thermotorch.batch) as one grid.",
+        "list runs a calphytorch batch (calphytorch.batch) as one grid.",
     )
 
     arg.add_argument(
@@ -222,10 +222,10 @@ def main():
 
         calc = Calculation(**calc_data)
 
-    if calc.engine == "thermotorch":
-        from calphy.thermotorch_backend import ThermotorchJob
+    if calc.engine == "calphytorch":
+        from calphy.calphytorch_backend import CalphytorchJob
 
-        ThermotorchJob(calculation=calc, log_to_screen=log_to_screen).run()
+        CalphytorchJob(calculation=calc, log_to_screen=log_to_screen).run()
         return
 
     # format and parse the arguments

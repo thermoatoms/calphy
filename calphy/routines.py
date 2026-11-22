@@ -528,7 +528,7 @@ def routine_fe(job):
     """
     Perform an FE calculation routine
     """
-    if getattr(job, "engine", "lammps") == "thermotorch":
+    if getattr(job, "engine", "lammps") == "calphytorch":
         return job.run_fe()
     ts = time.time()
     with job:
@@ -554,7 +554,7 @@ def routine_ts(job):
     """
     Perform ts routine
     """
-    if getattr(job, "engine", "lammps") == "thermotorch":
+    if getattr(job, "engine", "lammps") == "calphytorch":
         return job.run_ts()
     routine_fe(job)
 
@@ -624,7 +624,7 @@ def routine_alchemy(job):
     """
     Perform an FE calculation routine
     """
-    if getattr(job, "engine", "lammps") == "thermotorch":
+    if getattr(job, "engine", "lammps") == "calphytorch":
         return job.run()
     ts = time.time()
     with job:
@@ -692,7 +692,7 @@ def routine_composition_scaling(job):
     """
     Perform a compositional scaling routine
     """
-    if getattr(job, "engine", "lammps") == "thermotorch":
+    if getattr(job, "engine", "lammps") == "calphytorch":
         return job.run()
     # we set up comp scaling first
     job.logger.info("Calculating composition scaling")

@@ -796,25 +796,25 @@ _type_: string \
 _default_: lammps \
 _example_:
 ```
-engine: thermotorch
+engine: calphytorch
 ```
 
 The engine that runs the molecular dynamics.
 
 - `lammps` (default): LAMMPS, with the potential given by
   [`pair_style`](pair_style) / [`pair_coeff`](pair_coeff).
-- `thermotorch`: runs modes `fe`, `ts`, `alchemy` (including
+- `calphytorch`: runs modes `fe`, `ts`, `alchemy` (including
   `alchemy_coupling`) and `composition_scaling` (including label swaps) on any
   torch-native potential
   (MACE, GRACE, NequIP, ...) through
-  [thermotorch](https://github.com/thermoatoms/thermotorch), which re-hosts
+  [calphytorch](https://github.com/thermoatoms/calphytorch), which re-hosts
   calphy's protocols on [torch-sim](https://github.com/Radical-AI/torch-sim)
   and writes the same output files, so the results are post-processed the same
   way. The potential is given in the [`model`](model-block) block;
-  thermotorch-only settings go in the [`thermotorch`](thermotorch-block)
-  block. Needs `pip install git+https://github.com/thermoatoms/thermotorch`.
+  calphytorch-only settings go in the [`calphytorch`](calphytorch-block)
+  block. Needs `pip install git+https://github.com/thermoatoms/calphytorch`.
 
-  Settings thermotorch cannot honour are refused when the input is read, not
+  Settings calphytorch cannot honour are refused when the input is read, not
   ignored: other modes, `pair_style`/`pair_coeff`, the LAMMPS execution keys,
   the `nose_hoover`/`berendsen`/`quantum_thermal_bath` blocks, Monte Carlo
   swaps outside `composition_scaling` and the LAMMPS swap type numbers
@@ -822,11 +822,11 @@ The engine that runs the molecular dynamics.
   follow from the transformation), `md.cmdargs`/`md.init_commands`, a
   pressure range, and `pressure_coupling: tri` (`iso` and `aniso` are
   supported; `aniso` needs an orthogonal cell, which calphy's own hcp cell
-  is). Settings left unset take thermotorch's defaults, which differ
+  is). Settings left unset take calphytorch's defaults, which differ
   from calphy's in two deliberate places: the structural checks of
   `tolerance` (`solid_fraction`, `liquid_fraction`) are on,
   and the pressure convergence uses a standard-error test (see
-  [`pressure_convergence`](tt_pressure_convergence)). The values actually
+  [`pressure_convergence`](ct_pressure_convergence)). The values actually
   used are written to `input_file.yaml` in the simulation folder, and
   `report.yaml` gains an `engine` block recording the model, the package
   versions and the seed.
@@ -2143,9 +2143,9 @@ this setting.
 (model-block)=
 ## `model` block
 
-The potential for [`engine: thermotorch`](engine): a
+The potential for [`engine: calphytorch`](engine): a
 [torch-sim](https://github.com/Radical-AI/torch-sim) model, given either by
-the name of one of thermotorch's loaders or, for anything else, by the import
+the name of one of calphytorch's loaders or, for anything else, by the import
 path of a Python callable that builds it.
 
 ### Named loaders
@@ -2155,7 +2155,7 @@ The common families have named loaders. `kwargs` names the weights explicitly
 weights were used:
 
 ```
-engine: thermotorch
+engine: calphytorch
 model:
   name: mace
   kwargs: {model: medium-omat-0}
@@ -2220,7 +2220,7 @@ MLIPs on the same cell:
 
 ```
 mode: alchemy
-engine: thermotorch
+engine: calphytorch
 model:
   - name: mace
     kwargs: {model: small}
@@ -2298,29 +2298,29 @@ precision: float32
 ```
 
 `float64` or `float32`. Passed to the callable as `dtype`, if it has a
-parameter called `dtype`. thermotorch integrates in float64; with `float32`
+parameter called `dtype`. calphytorch integrates in float64; with `float32`
 only the model's own evaluation runs in single precision (the model is wrapped
-in thermotorch's `SinglePrecisionModel`), while positions, the integrator and
+in calphytorch's `SinglePrecisionModel`), while positions, the integrator and
 the switching work stay float64. Use it for models whose weights are float32
 only, or for speed once the error is checked to be small.
 
 ---
 
-(thermotorch-block)=
-## `thermotorch` block
+(calphytorch-block)=
+## `calphytorch` block
 
-Settings that only [`engine: thermotorch`](engine) has. Unset values take
-thermotorch's defaults.
+Settings that only [`engine: calphytorch`](engine) has. Unset values take
+calphytorch's defaults.
 
 ```
-thermotorch:
+calphytorch:
   pressure_convergence: sem
   melt_t_factor: 2.0
 ```
 
 ---
 
-(tt_pressure_convergence)=
+(ct_pressure_convergence)=
 #### `pressure_convergence`
 
 _type_: string \
@@ -2332,7 +2332,7 @@ pressure_convergence: calphy
 
 How the averaging stage decides the box has reached the target pressure.
 
-- `sem` (thermotorch's default): stops once the target lies within
+- `sem` (calphytorch's default): stops once the target lies within
   `max(tolerance.pressure, 2 x standard error)` of the running mean pressure,
   after at least 5 cycles, with no drift left in the volume and the kinetic
   temperature on its setpoint. The residual pressure it accepts costs a
@@ -2342,7 +2342,7 @@ How the averaging stage decides the box has reached the target pressure.
 
 ---
 
-(tt_melt_t_factor)=
+(ct_melt_t_factor)=
 #### `melt_t_factor`
 
 _type_: float \
@@ -2358,7 +2358,7 @@ set.
 
 ---
 
-(tt_n_melt_steps)=
+(ct_n_melt_steps)=
 #### `n_melt_steps`
 
 _type_: int \
@@ -2372,7 +2372,7 @@ MD steps spent melting a liquid's starting structure.
 
 ---
 
-(tt_cell_damping)=
+(ct_cell_damping)=
 #### `cell_damping`
 
 _type_: float \
@@ -2386,7 +2386,7 @@ Ring-down time in ps of the barostat's cell degree of freedom.
 
 ---
 
-(tt_batch)=
+(ct_batch)=
 #### `batch`
 
 _type_: bool \
@@ -2410,7 +2410,7 @@ calculation on its own. A calculation excluded by its phase check (a solid
 that melted, a liquid that froze) gets no report; the others finish, and the
 job ends with an error naming it.
 
-A batched job checkpoints into a `thermotorch_grid_<hash>` folder next to the
+A batched job checkpoints into a `calphytorch_grid_<hash>` folder next to the
 calculation folders. It also stops cleanly at the `SIGUSR1` signal a scheduler
 can send before the wall-clock limit, for example SLURM's
 `--signal=B:USR1@300`. Submitting the same job again resumes it from there, in
@@ -2418,7 +2418,7 @@ the same folders.
 
 ---
 
-(tt_max_switch_systems)=
+(ct_max_switch_systems)=
 #### `max_switch_systems`
 
 _type_: int \
@@ -2433,7 +2433,7 @@ once. Lower it when the batch does not fit in GPU memory.
 
 ---
 
-(tt_checkpoint_every)=
+(ct_checkpoint_every)=
 #### `checkpoint_every`
 
 _type_: int \

@@ -75,11 +75,11 @@ def run_jobs(inputfile, validate=False):
     calculations = read_inputfile(inputfile, validate=validate)
     print("Total number of %d calculations found" % len(calculations))
 
-    # engine thermotorch with thermotorch.batch: calculations that differ only
+    # engine calphytorch with calphytorch.batch: calculations that differ only
     # in temperature (or output composition) go out as ONE job
     with open(inputfile, "r") as fin:
         raw = yaml.safe_load(fin)["calculations"]
-    from calphy.thermotorch_backend import batch_groups
+    from calphy.calphytorch_backend import batch_groups
 
     groups = batch_groups(raw)
 
