@@ -448,3 +448,103 @@ def test_aniso_coupling_is_passed_on():
 
 def test_triclinic_coupling_is_refused():
     assert "pressure_coupling: 'tri'" in error_of(pressure_coupling="tri")
+
+
+# --------------------------------------------------------------------------- #
+# batched jobs (thermotorch.batch)
+# --------------------------------------------------------------------------- #
+def _raw(**extra):
+    out = {**BASE, "thermotorch": {"batch": True}, **extra}
+    return yaml.safe_load(yaml.safe_dump(out))
+
+
+def test_batch_groups_join_blocks_that_differ_only_in_temperature():
+    from calphy.thermotorch_backend import batch_groups
+
+    raw = [
+        _raw(temperature=40),
+        _raw(temperature=60),
+        _raw(temperature=80, n_switching_steps=999),     # other protocol
+        _raw(temperature=50, thermotorch={"batch": False}),
+        _raw(temperature=70),
+        _raw(mode="ts", temperature=[30, 60]),          # ts is not batched
+        _raw(temperature=90, reference_phase="liquid"),
+        {**BASE, "temperature": 45},                     # no thermotorch block
+    ]
+    assert batch_groups(raw) == [[0, 1, 4], [2], [3], [5], [6], [7]]
+
+
+def test_composition_scaling_batches_across_output_compositions():
+    from calphy.thermotorch_backend import batch_groups
+
+    def cs(out, t=40):
+        return _raw(mode="composition_scaling", temperature=t,
+                    composition_scaling={"output_chemical_composition": out})
+
+    raw = [cs({"Ar": 100, "Kr": 8}), cs({"Ar": 96, "Kr": 12}),
+           cs({"Ar": 100, "Kr": 8}, t=60)]
+    assert batch_groups(raw) == [[0, 1, 2]]
+
+
+def test_a_batch_is_submitted_as_one_job(tmp_path, monkeypatch):
+    import calphy.scheduler as pq
+    from calphy.kernel import run_jobs
+
+    commands = []
+
+    def submit(self):
+        commands.append(self.maincommand)
+
+    monkeypatch.setattr(pq.Local, "submit", submit)
+    blocks = [_raw(temperature=t) for t in (40, 60, 80)]
+    blocks.append(_raw(temperature=50, thermotorch={"batch": False}))
+    with open("input.yaml", "w") as fout:
+        yaml.safe_dump({"calculations": blocks}, fout)
+    run_jobs("input.yaml")
+    assert commands == ["calphy_kernel -i input.yaml -k 0,1,2",
+                        "calphy_kernel -i input.yaml -k 3"]
+
+
+def test_run_batched_refuses_calculations_that_do_not_belong_together():
+    from calphy.thermotorch_backend import run_batched
+
+    raw = [_raw(temperature=40), _raw(temperature=60, n_switching_steps=999)]
+    calcs = [build(**{k: v for k, v in r.items() if k in ("temperature",)})
+             for r in raw]
+    with pytest.raises(ValueError, match="cannot run as one batch"):
+        run_batched(calcs, raw_calculations=raw)
+
+
+@pytest.mark.slow
+def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
+    """Two temperatures through calphy_kernel -k 0,1: one grid, one report
+    per calculation; running the same job again resumes from the grid's
+    checkpoint in the same folders instead of refusing them."""
+    pytest.importorskip("thermotorch")
+    from calphy.queuekernel import _run_batch
+
+    common = dict(n_equilibration_steps=2000, n_switching_steps=800,
+                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
+                  tolerance={"pressure": 1e5, "dissipation": 0},
+                  thermotorch={"batch": True, "pressure_convergence": "calphy"})
+    blocks = [_raw(temperature=t, **common) for t in (30, 50)]
+    with open("input.yaml", "w") as fout:
+        yaml.safe_dump({"calculations": blocks}, fout)
+
+    _run_batch("input.yaml", [0, 1])
+    folders = sorted(d for d in os.listdir(".") if d.startswith("fe-"))
+    assert len(folders) == 2
+    fes = []
+    for folder in folders:
+        with open(os.path.join(folder, "report.yaml")) as fin:
+            report = yaml.safe_load(fin)
+        assert report["engine"]["name"] == "thermotorch"
+        fes.append(report["results"]["free_energy"])
+    assert all(-0.1 < f < -0.04 for f in fes)
+    assert [d for d in os.listdir(".") if d.startswith("thermotorch_grid_")]
+
+    # the same job again: folders reused, nothing re-switched, same answers
+    _run_batch("input.yaml", [0, 1])
+    for folder, fe in zip(folders, fes):
+        with open(os.path.join(folder, "report.yaml")) as fin:
+            assert yaml.safe_load(fin)["results"]["free_energy"] == pytest.approx(fe)

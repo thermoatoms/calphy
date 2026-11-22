@@ -601,6 +601,14 @@ class ThermotorchOptions(_StrictInput, title="Settings only engine thermotorch h
     melt_t_factor: Annotated[Optional[float], Field(default=None, gt=1.0)]
     n_melt_steps: Annotated[Optional[int], Field(default=None, gt=0)]
     cell_damping: Annotated[Optional[float], Field(default=None, gt=0)]
+    # run calculations that differ only in temperature (and, for
+    # composition_scaling, output composition) as one batched job
+    batch: Annotated[bool, Field(default=False)]
+    # cap on systems per switching batch (memory); None = all at once
+    max_switch_systems: Annotated[Optional[int], Field(default=None, gt=0)]
+    # steps between switching checkpoints of a batched job; 0 = only at the
+    # wall-clock signal and at stage boundaries
+    checkpoint_every: Annotated[int, Field(default=0, ge=0)]
 
 
 class Calculation(_StrictInput, title="Main input class"):

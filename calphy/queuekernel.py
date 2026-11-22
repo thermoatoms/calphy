@@ -23,6 +23,7 @@ For more information contact:
 sarath.menon@ruhr-uni-bochum.de
 """
 
+import copy
 import os
 import numpy as np
 import shutil
@@ -128,6 +129,29 @@ def run_calculation(job):
     return job
 
 
+def _load_calculation(inputfile, data, kernel):
+    """Validate calculation block ``kernel`` of the parsed input ``data``."""
+    from calphy.input import Calculation, _to_none
+
+    calc_data = copy.deepcopy(data["calculations"][kernel])
+    calc_data["kernel"] = kernel
+    calc_data["inputfile"] = inputfile
+    if "pressure" in calc_data.keys():
+        calc_data["pressure"] = _to_none(calc_data["pressure"])
+    return Calculation(**calc_data)
+
+
+def _run_batch(inputfile, kernels, log_to_screen=False):
+    """Run the calculation blocks ``kernels`` as one thermotorch grid."""
+    from calphy.thermotorch_backend import run_batched
+
+    with open(inputfile, "r") as fin:
+        data = yaml.safe_load(fin)
+    raw = [copy.deepcopy(data["calculations"][k]) for k in kernels]
+    calcs = [_load_calculation(inputfile, data, k) for k in kernels]
+    run_batched(calcs, raw_calculations=raw, log_to_screen=log_to_screen)
+
+
 def main():
     arg = ap.ArgumentParser()
 
@@ -140,8 +164,9 @@ def main():
         "-k",
         "--kernel",
         required=True,
-        type=int,
-        help="kernel number of the calculation to be run.",
+        type=str,
+        help="kernel number of the calculation to be run; a comma-separated "
+        "list runs a thermotorch batch (thermotorch.batch) as one grid.",
     )
 
     arg.add_argument(
@@ -163,9 +188,14 @@ def main():
     # parse input
     # parse arguments
     args = vars(arg.parse_args())
-    kernel = args["kernel"]
+    kernels = [int(k) for k in str(args["kernel"]).split(",") if k.strip()]
+    kernel = kernels[0]
     log_to_screen = args["screen"]
     validate = args["validate"]
+
+    if len(kernels) > 1:
+        _run_batch(args["input"], kernels, log_to_screen)
+        return
 
     if validate:
         # Full validation mode: validate all calculations during parse

@@ -75,10 +75,23 @@ def run_jobs(inputfile, validate=False):
     calculations = read_inputfile(inputfile, validate=validate)
     print("Total number of %d calculations found" % len(calculations))
 
-    for count, calc in enumerate(calculations):
+    # engine thermotorch with thermotorch.batch: calculations that differ only
+    # in temperature (or output composition) go out as ONE job
+    with open(inputfile, "r") as fin:
+        raw = yaml.safe_load(fin)["calculations"]
+    from calphy.thermotorch_backend import batch_groups
+
+    groups = batch_groups(raw)
+
+    for group in groups:
+        count = group[0]
+        calc = calculations[count]
         queue = _getattr_safe(calc, "queue")
 
         identistring = calc.create_identifier()
+        if len(group) > 1:
+            identistring += "-batch%d" % len(group)
+            print("Batching calculations %s into one job" % group)
         scriptpath = os.path.join(os.getcwd(), ".".join([identistring, "sub"]))
         errfile = os.path.join(os.getcwd(), ".".join([identistring, "err"]))
 
@@ -104,7 +117,8 @@ def run_jobs(inputfile, validate=False):
         )
 
         # for lattice just provide the number of position
-        scheduler.maincommand = "calphy_kernel -i %s -k %d" % (inputfile, count)
+        scheduler.maincommand = "calphy_kernel -i %s -k %s" % (
+            inputfile, ",".join(str(i) for i in group))
         scheduler.write_script(scriptpath)
         _ = scheduler.submit()
 

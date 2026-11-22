@@ -647,11 +647,15 @@ class ThermotorchJob:
             setattr(self.calc.tolerance, name, getattr(tt.tolerance, name))
         from calphy.input import ThermotorchOptions
 
+        given = self.calc.thermotorch or ThermotorchOptions()
         self.calc.thermotorch = ThermotorchOptions(
             pressure_convergence=tt.pressure_convergence,
             melt_t_factor=tt.melt_t_factor,
             n_melt_steps=tt.n_melt_steps,
             cell_damping=tt.md.cell_damping,
+            batch=given.batch,
+            max_switch_systems=given.max_switch_systems,
+            checkpoint_every=given.checkpoint_every,
         )
         indict = {"calculations": [_yaml_safe(self.calc.model_dump())]}
         with open(os.path.join(self.simfolder, "input_file.yaml"), "w") as fout:
@@ -709,6 +713,134 @@ class ThermotorchJob:
         with open(reportfile, "w") as fout:
             yaml.dump(report, fout)
         self.report = report
+
+
+#: Modes a batched job can run as one grid (thermotorch's routine_fe_grid and
+#: routine_alchemy_grid). ts sweeps each point on its own.
+BATCH_MODES = ("fe", "alchemy", "composition_scaling")
+
+
+def _batch_key(raw):
+    """What must agree for two calculation blocks (raw input dicts) to run as
+    one batch: everything except the temperature and, for
+    composition_scaling, the output composition. The grid runs every point
+    with the first point's MD settings, so nothing else may differ."""
+    raw = copy.deepcopy(dict(raw))
+    for name in ("temperature", "kernel", "inputfile"):
+        raw.pop(name, None)
+    scaling = raw.get("composition_scaling")
+    if isinstance(scaling, dict):
+        scaling.pop("output_chemical_composition", None)
+    return yaml.safe_dump(_yaml_safe(raw), sort_keys=True)
+
+
+def _batchable(raw):
+    tt = raw.get("thermotorch") or {}
+    return (raw.get("engine") == "thermotorch" and bool(tt.get("batch"))
+            and raw.get("mode", "fe") in BATCH_MODES)
+
+
+def batch_groups(raw_calculations):
+    """Indices of the calculation blocks, grouped into the jobs to submit.
+
+    Blocks with ``engine: thermotorch`` and ``thermotorch: {batch: true}``
+    in a batchable mode are grouped with every other such block that agrees
+    on everything but temperature (and output composition); every other
+    block is a job of its own. Groups keep input order."""
+    groups, by_key = [], {}
+    for index, raw in enumerate(raw_calculations):
+        if not _batchable(raw):
+            groups.append([index])
+            continue
+        key = _batch_key(raw)
+        if key in by_key:
+            groups[by_key[key]].append(index)
+        else:
+            by_key[key] = len(groups)
+            groups.append([index])
+    return groups
+
+
+def run_batched(calculations, raw_calculations=None, log_to_screen=False):
+    """Run several calculations as one thermotorch grid.
+
+    ``calculations`` are validated :class:`calphy.input.Calculation` objects
+    of one batch group (:func:`batch_groups`); ``raw_calculations``, their
+    input dicts, are used to check that they really belong together. The
+    model is built once; ``fe`` runs through ``routine_fe_grid``,
+    ``alchemy`` and ``composition_scaling`` through ``routine_alchemy_grid``.
+    Every calculation keeps its own folder, ``input_file.yaml`` and
+    ``report.yaml``.
+
+    The grid checkpoints into ``thermotorch_grid_<hash>`` next to the
+    calculation folders (averaging, replica cells, every switching chunk;
+    ``thermotorch.checkpoint_every`` steps apart within a chunk) and stops
+    cleanly at SIGUSR1 -- the wall-clock warning a scheduler can send.
+    Running the same job again resumes from there, reusing the folders.
+
+    A point excluded by its phase check (melted / solidified) gets no
+    report; the others finish, and the job then raises naming it.
+    """
+    import hashlib
+
+    calcs = list(calculations)
+    if not calcs:
+        raise ValueError("no calculations to run")
+    if raw_calculations is not None:
+        keys = {_batch_key(r) for r in raw_calculations}
+        if len(keys) != 1 or not all(_batchable(r) for r in raw_calculations):
+            raise ValueError(
+                "these calculations cannot run as one batch: they must all set "
+                "engine thermotorch and thermotorch.batch, use mode %s, and "
+                "agree on everything but temperature (and output composition)"
+                % "/".join(BATCH_MODES))
+    mode = calcs[0].mode
+    if mode not in BATCH_MODES:
+        raise ValueError("mode %r is not batched; run it on its own" % mode)
+
+    folders = [c.get_folder_name() for c in calcs]
+    tag = hashlib.sha1("\n".join(folders).encode()).hexdigest()[:10]
+    ckdir = os.path.join(os.path.dirname(os.path.abspath(folders[0])),
+                         "thermotorch_grid_" + tag)
+    resuming = os.path.isdir(ckdir)
+
+    def folder_for(name):
+        # a resumed grid continues in the folders it wrote
+        return name if resuming and os.path.isdir(name) else None
+
+    first = ThermotorchJob(calcs[0], simfolder=folder_for(folders[0]),
+                           log_to_screen=log_to_screen)
+    jobs = [first]
+    for c, name in zip(calcs[1:], folders[1:]):
+        job = ThermotorchJob(c, simfolder=folder_for(name), model=first.model,
+                             log_to_screen=log_to_screen)
+        job._model_record = first._model_record
+        jobs.append(job)
+    os.makedirs(ckdir, exist_ok=True)
+
+    from thermotorch.checkpoint import install_wall_clock_handler
+    from thermotorch.routines import routine_alchemy_grid, routine_fe_grid
+
+    install_wall_clock_handler()
+    opts = calcs[0].thermotorch
+    grid = routine_fe_grid if mode == "fe" else routine_alchemy_grid
+    phases = grid([j.tt_calc for j in jobs], [j.simfolder for j in jobs],
+                  first.model, log_to_screen=log_to_screen,
+                  max_switch_systems=opts.max_switch_systems,
+                  checkpoint_dir=ckdir, checkpoint_every=opts.checkpoint_every)
+
+    excluded = []
+    for job, phase in zip(jobs, phases):
+        job.phase = phase
+        error = getattr(phase, "averaging_error", None)
+        if error is not None:
+            excluded.append("%s (%r)" % (job.simfolder, error))
+            continue
+        job._record_engine()
+    if excluded:
+        raise RuntimeError("excluded from the batch, no result: "
+                           + "; ".join(excluded))
+    return jobs
 
 
 def engine_record(tt_calc, model_record):

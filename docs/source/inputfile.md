@@ -2383,3 +2383,65 @@ cell_damping: 1.0
 ```
 
 Ring-down time in ps of the barostat's cell degree of freedom.
+
+---
+
+(tt_batch)=
+#### `batch`
+
+_type_: bool \
+_default_: False \
+_example_:
+```
+batch: true
+```
+
+Run calculations that differ only in temperature as one job. When `calphy -i`
+submits the input, every calculation with `batch: true` is grouped with the
+others that agree with it on everything except `temperature`. For mode
+`composition_scaling`, the output composition may differ as well. Each group
+is submitted as one job (`calphy_kernel -i input.yaml -k 0,1,2`), which runs
+the group as one batched simulation on one GPU: each calculation averages on
+its own, then the switching of every calculation and iteration runs together.
+Every calculation keeps its own folder and `report.yaml`.
+
+Modes `fe`, `alchemy` and `composition_scaling` are batched; `ts` runs each
+calculation on its own. A calculation excluded by its phase check (a solid
+that melted, a liquid that froze) gets no report; the others finish, and the
+job ends with an error naming it.
+
+A batched job checkpoints into a `thermotorch_grid_<hash>` folder next to the
+calculation folders. It also stops cleanly at the `SIGUSR1` signal a scheduler
+can send before the wall-clock limit, for example SLURM's
+`--signal=B:USR1@300`. Submitting the same job again resumes it from there, in
+the same folders.
+
+---
+
+(tt_max_switch_systems)=
+#### `max_switch_systems`
+
+_type_: int \
+_default_: None (all at once) \
+_example_:
+```
+max_switch_systems: 8
+```
+
+For a batched job, the most systems (calculations x iterations) switched at
+once. Lower it when the batch does not fit in GPU memory.
+
+---
+
+(tt_checkpoint_every)=
+#### `checkpoint_every`
+
+_type_: int \
+_default_: 0 \
+_example_:
+```
+checkpoint_every: 5000
+```
+
+For a batched job, MD steps between checkpoints inside a switching leg. With
+0, it checkpoints only between stages and at the `SIGUSR1` signal.
