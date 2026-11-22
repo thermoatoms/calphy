@@ -79,8 +79,9 @@ def run_jobs(inputfile, validate=False):
     # in temperature (or output composition) go out as ONE job
     with open(inputfile, "r") as fin:
         raw = yaml.safe_load(fin)["calculations"]
-    from calphy.calphytorch_backend import batch_groups
+    from calphy.calphytorch_backend import batch_groups, preflight
 
+    preflight(raw)          # refuse what would only fail inside the job
     groups = batch_groups(raw)
 
     for group in groups:
@@ -119,6 +120,11 @@ def run_jobs(inputfile, validate=False):
         # for lattice just provide the number of position
         scheduler.maincommand = "calphy_kernel -i %s -k %s" % (
             inputfile, ",".join(str(i) for i in group))
+        if raw[count].get("engine") == "calphytorch":
+            # exec: the kernel replaces the batch shell, so a scheduler's
+            # wall-clock warning (SLURM --signal=B:USR1@...) reaches it and
+            # it can checkpoint and stop cleanly
+            scheduler.maincommand = "exec " + scheduler.maincommand
         scheduler.write_script(scriptpath)
         _ = scheduler.submit()
 

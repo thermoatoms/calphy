@@ -501,8 +501,9 @@ def test_a_batch_is_submitted_as_one_job(tmp_path, monkeypatch):
     with open("input.yaml", "w") as fout:
         yaml.safe_dump({"calculations": blocks}, fout)
     run_jobs("input.yaml")
-    assert commands == ["calphy_kernel -i input.yaml -k 0,1,2",
-                        "calphy_kernel -i input.yaml -k 3"]
+    # exec: the kernel replaces the batch shell, so SIGUSR1 reaches it
+    assert commands == ["exec calphy_kernel -i input.yaml -k 0,1,2",
+                        "exec calphy_kernel -i input.yaml -k 3"]
 
 
 def test_run_batched_refuses_calculations_that_do_not_belong_together():
@@ -523,8 +524,10 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
     pytest.importorskip("calphytorch")
     from calphy.queuekernel import _run_batch
 
+    # no md.seed: the seeds backfilled at the first submission must be the
+    # ones a resubmission uses, or the checkpoints refuse it
     common = dict(n_equilibration_steps=2000, n_switching_steps=800,
-                  md={"n_small_steps": 200, "n_cycles": 20, "seed": 7},
+                  md={"n_small_steps": 200, "n_cycles": 20},
                   tolerance={"pressure": 1e5, "dissipation": 0},
                   calphytorch={"batch": True, "pressure_convergence": "calphy"})
     blocks = [_raw(temperature=t, **common) for t in (30, 50)]
@@ -547,8 +550,68 @@ def test_a_batched_fe_grid_runs_and_resumes(tmp_path):
     # the same job again: folders reused, nothing re-switched, same answers
     legs = [os.path.join(f, "forward_1.dat") for f in folders]
     stamps = [os.path.getmtime(p) for p in legs]
+    inputs = [open(os.path.join(f, "input_file.yaml")).read() for f in folders]
     _run_batch("input.yaml", [0, 1])
     assert [os.path.getmtime(p) for p in legs] == stamps, "legs were re-run"
-    for folder, fe in zip(folders, fes):
+    for folder, fe, text in zip(folders, fes, inputs):
         with open(os.path.join(folder, "report.yaml")) as fin:
             assert yaml.safe_load(fin)["results"]["free_energy"] == pytest.approx(fe)
+        # the finished folder's input still reproduces its result
+        assert open(os.path.join(folder, "input_file.yaml")).read() == text
+
+    # a changed potential must not be answered with the old results
+    blocks[0]["model"]["kwargs"]["epsilon"] = 0.02
+    blocks[1]["model"]["kwargs"]["epsilon"] = 0.02
+    with open("input.yaml", "w") as fout:
+        yaml.safe_dump({"calculations": blocks}, fout)
+    with pytest.raises(ValueError, match="different inputs"):
+        _run_batch("input.yaml", [0, 1])
+    assert [os.path.getmtime(p) for p in legs] == stamps
+
+
+def test_batch_folders_carry_the_composition_and_refuse_clashes():
+    from calphy.calphytorch_backend import _batch_folder_names
+
+    import types
+
+    def cs(out, t=40):
+        # what _batch_folder_names reads of a composition-scaling calculation
+        return types.SimpleNamespace(
+            mode="composition_scaling",
+            get_folder_name=lambda: "composition_scaling-ar108-solid-%d-0" % t,
+            composition_scaling=types.SimpleNamespace(
+                output_chemical_composition=out))
+
+    names = _batch_folder_names([cs({"Ar": 99, "Kr": 9}),
+                                 cs({"Ar": 96, "Kr": 12})])
+    assert names[0].endswith("-Ar99Kr9") and names[1].endswith("-Ar96Kr12")
+    with pytest.raises(ValueError, match="share a folder"):
+        _batch_folder_names([build(temperature=30), build(temperature=30.4)])
+
+
+def test_settings_calphytorch_cannot_honour_are_refused_at_input():
+    assert "mode ts sweeps a range" in error_of(mode="ts", temperature=40)
+    assert "alchemy_coupling: applies to mode alchemy" in error_of(
+        alchemy_coupling=True)
+    assert "refused for a liquid" in error_of(reference_phase="liquid",
+                                              pressure_coupling="aniso")
+    assert "refused for a liquid" in error_of(reference_phase="liquid",
+                                              pressure=[[0, 0, 0]])
+    assert "two-leg UFM" in error_of(
+        reference_phase="liquid", uhlenbeck_ford_model={"single_sigma": 2.0})
+    assert "batched jobs only" in error_of(
+        calphytorch={"max_switch_systems": 4})
+    assert "not batched" in error_of(mode="ts", temperature=[30, 60],
+                                     calphytorch={"batch": True})
+    assert "n_print_steps" in error_of(n_print_steps=100)
+    # a null block is "nothing set", not an AttributeError
+    assert build(tolerance=None).engine == "calphytorch"
+
+
+def test_a_missing_model_block_is_refused_before_submission():
+    from calphy.calphytorch_backend import preflight
+
+    raw = [{k: v for k, v in _raw().items() if k != "model"}]
+    with pytest.raises(ValueError, match="needs a 'model' block"):
+        preflight(raw)
+    preflight([_raw()])

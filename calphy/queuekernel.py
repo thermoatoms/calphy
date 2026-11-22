@@ -189,6 +189,8 @@ def main():
     # parse arguments
     args = vars(arg.parse_args())
     kernels = [int(k) for k in str(args["kernel"]).split(",") if k.strip()]
+    if not kernels:
+        arg.error("-k/--kernel needs a calculation index (or a comma list)")
     kernel = kernels[0]
     log_to_screen = args["screen"]
     validate = args["validate"]
@@ -225,6 +227,11 @@ def main():
     if calc.engine == "calphytorch":
         from calphy.calphytorch_backend import CalphytorchJob
 
+        if calc.calphytorch is not None and calc.calphytorch.batch:
+            # a batch of one: the grid path, which honours max_switch_systems
+            # and checkpoint_every and resumes after a wall-clock stop
+            _run_batch(args["input"], [kernel], log_to_screen)
+            return
         CalphytorchJob(calculation=calc, log_to_screen=log_to_screen).run()
         return
 

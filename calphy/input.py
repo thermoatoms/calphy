@@ -579,8 +579,9 @@ class MaterialsProject(_StrictInput, title="Input options for materials project"
 class TorchModel(_StrictInput, title="Torch model for engine calphytorch"):
     """The potential for ``engine: calphytorch``: any callable returning a torch-sim model.
 
-    ``name`` is its full import path (``package.module.attribute``,
-    ``package.module:attribute`` or ``path/to/file.py:attribute``); it is
+    ``name`` is a calphytorch loader name (``mace``, ``grace-fs``, ...) or
+    an import path (``package.module.attribute``, ``package.module:attribute``
+    or ``/absolute/path/to/file.py:attribute``); it is
     called with ``kwargs``, plus ``device`` and ``dtype`` when it has
     parameters of those names.  See :mod:`calphy.calphytorch_backend`.
     """
@@ -697,7 +698,8 @@ class Calculation(_StrictInput, title="Main input class"):
     ]
 
     script_mode: Annotated[bool, Field(default=False)]
-    # "lammps" (default) or "calphytorch": run fe/ts on a torch-native
+    # "lammps" (default) or "calphytorch": run fe, ts, alchemy and
+    # composition_scaling on a torch-native
     # potential through calphytorch instead of LAMMPS (calphy.calphytorch_backend)
     engine: Annotated[str, Field(default="lammps")]
     # one model; for mode alchemy two: [initial, final], or [base, added]

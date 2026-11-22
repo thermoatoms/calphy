@@ -2401,20 +2401,44 @@ submits the input, every calculation with `batch: true` is grouped with the
 others that agree with it on everything except `temperature`. For mode
 `composition_scaling`, the output composition may differ as well. Each group
 is submitted as one job (`calphy_kernel -i input.yaml -k 0,1,2`), which runs
-the group as one batched simulation on one GPU: each calculation averages on
-its own, then the switching of every calculation and iteration runs together.
-Every calculation keeps its own folder and `report.yaml`.
+the group as one batched simulation on one GPU. For `fe`, the averaging stage
+of every calculation runs as one batch too; for `alchemy` and
+`composition_scaling`, each calculation averages on its own. In both cases,
+the switching of every calculation and iteration runs together. Every
+calculation keeps its own folder and `report.yaml`. For
+`composition_scaling`, the folder name carries the output composition (for
+example `...-Ar96Kr12`).
 
-Modes `fe`, `alchemy` and `composition_scaling` are batched; `ts` runs each
-calculation on its own. A calculation excluded by its phase check (a solid
-that melted, a liquid that froze) gets no report; the others finish, and the
-job ends with an error naming it.
+Modes `fe`, `alchemy` (without `alchemy_coupling`) and `composition_scaling`
+are batched. `batch: true` is refused for `ts` and for `alchemy_coupling`.
+Calculations whose folders would clash cannot share a batch, and are refused.
+Calphy names folders by integer temperature, so this covers points less than
+1 K apart and duplicated points. A calculation with `batch: true` and no
+partner runs as a batch of one, so it keeps the checkpointing below.
+
+A calculation excluded by its phase check (a solid that melted, a liquid that
+froze) gets no report. The others finish, and the job ends with an error
+naming it.
 
 A batched job checkpoints into a `calphytorch_grid_<hash>` folder next to the
-calculation folders. It also stops cleanly at the `SIGUSR1` signal a scheduler
-can send before the wall-clock limit, for example SLURM's
-`--signal=B:USR1@300`. Submitting the same job again resumes it from there, in
-the same folders.
+calculation folders. That folder also records a fingerprint of the inputs
+(calculation settings, model blocks, structure file) and the random seed of
+every calculation.
+- **Resubmitting the same job** resumes it from that folder, in the same
+  folders and with the same seeds.
+- **Resubmitting after changing an input** is refused, rather than relabelling
+  the old results. Delete the `calphytorch_grid_*` folder and the calculation
+  folders to start over.
+
+The job also stops cleanly at the `SIGUSR1` signal a scheduler can send before
+the wall-clock limit. With SLURM, add `--signal=B:USR1@300` to the queue
+options; calphy starts calphytorch jobs with `exec`, so the signal reaches
+them.
+
+The `input_file.yaml` in each folder records that calculation's settings and
+seed. The batch's shared switching, however, draws its noise from the first
+calculation's seed, so rerunning one folder on its own reproduces the
+settings, not the identical trajectory.
 
 ---
 
@@ -2429,7 +2453,7 @@ max_switch_systems: 8
 ```
 
 For a batched job, the most systems (calculations x iterations) switched at
-once. Lower it when the batch does not fit in GPU memory.
+once. Lower it when the batch does not fit in GPU memory. Needs `batch: true`.
 
 ---
 
@@ -2444,4 +2468,5 @@ checkpoint_every: 5000
 ```
 
 For a batched job, MD steps between checkpoints inside a switching leg. With
-0, it checkpoints only between stages and at the `SIGUSR1` signal.
+0, it checkpoints only between stages and at the `SIGUSR1` signal. Needs
+`batch: true`.

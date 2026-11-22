@@ -109,7 +109,7 @@ ALLOWED_FIELDS = frozenset({
     "temperature", "temperature_high", "pressure", "pressure_coupling",
     # protocol
     "melting_cycle", "npt", "n_equilibration_steps", "n_switching_steps",
-    "n_print_steps", "n_iterations", "spring_constants", "alchemy_coupling",
+    "n_iterations", "spring_constants", "alchemy_coupling",
     # option blocks (their own fields are checked below)
     "md", "tolerance", "uhlenbeck_ford_model", "composition_scaling",
     "monte_carlo",
@@ -121,11 +121,11 @@ ALLOWED_FIELDS = frozenset({
 #: is refused. Blocks not listed in ALLOWED_FIELDS are refused as a whole.
 ALLOWED_BLOCK_FIELDS = {
     "md": frozenset({
-        "timestep", "n_small_steps", "n_every_steps", "n_repeat_steps",
+        "timestep", "n_small_steps", "n_every_steps",
         "n_cycles", "thermostat_damping", "barostat_damping", "seed",
     }),
     "tolerance": frozenset({
-        "lattice_constant", "spring_constant", "solid_fraction",
+        "spring_constant", "solid_fraction",
         "liquid_fraction", "dissipation", "pressure",
     }),
     # forward/reverse_swap_types are LAMMPS type numbers; calphytorch derives
@@ -186,6 +186,8 @@ def check_calculation(calc):
 
     for block, allowed in ALLOWED_BLOCK_FIELDS.items():
         sub = getattr(calc, block)
+        if sub is None:          # `block: null` in the input: nothing set
+            continue
         for field in sorted(set(type(sub).model_fields) - allowed):
             if _differs_from_default(sub, field):
                 problems.append(
@@ -201,7 +203,8 @@ def check_calculation(calc):
             )
     elif isinstance(models, list):
         problems.append("model: give one model; a list of two is for mode alchemy")
-    if calc.monte_carlo.n_swaps > 0 and mode != "composition_scaling":
+    if (calc.monte_carlo is not None and calc.monte_carlo.n_swaps > 0
+            and mode != "composition_scaling"):
         problems.append(
             "monte_carlo.n_swaps: with engine 'calphytorch' swaps apply to "
             "mode composition_scaling only"
@@ -230,6 +233,55 @@ def check_calculation(calc):
             "calphytorch's anisotropic barostat needs an orthogonal cell; use "
             "'aniso'"
         )
+    liquid = calc.reference_phase == "liquid"
+    three_component = pressure is not None and np.size(pressure) == 3
+    if liquid and (three_component or (
+            coupling is not None and str(coupling).lower() == "aniso")):
+        problems.append(
+            "pressure_coupling: 'aniso' (or a 3-component pressure) is refused "
+            "for a liquid -- its box has no restoring force on its shape and "
+            "flows; give a scalar pressure"
+        )
+
+    if mode == "ts" and np.size(calc.temperature) != 2:
+        problems.append(
+            "temperature: mode ts sweeps a range; give [start, stop]")
+    if calc.alchemy_coupling and mode != "alchemy":
+        problems.append("alchemy_coupling: applies to mode alchemy only")
+    scaling = getattr(calc, "composition_scaling", None)
+    if (scaling is not None and mode != "composition_scaling"
+            and _differs_from_default(calc, "composition_scaling")):
+        problems.append(
+            "composition_scaling: applies to mode composition_scaling only")
+
+    ufm = getattr(calc, "uhlenbeck_ford_model", None)
+    if ufm is not None:
+        if isinstance(ufm.sigma, dict):
+            problems.append(
+                "uhlenbeck_ford_model.sigma: per-pair sigmas are calphy's "
+                "two-leg UFM reference, which calphytorch does not implement; "
+                "give one sigma")
+        for name in ("single_sigma", "single_p"):
+            if getattr(ufm, name, None) is not None:
+                problems.append(
+                    "uhlenbeck_ford_model.%s: belongs to the two-leg UFM "
+                    "reference, which calphytorch does not implement" % name)
+
+    opts = getattr(calc, "calphytorch", None)
+    if opts is not None:
+        if not opts.batch and (opts.max_switch_systems is not None
+                               or opts.checkpoint_every):
+            problems.append(
+                "calphytorch.max_switch_systems / checkpoint_every: apply to "
+                "batched jobs only; set calphytorch.batch: true")
+        if opts.batch and mode not in BATCH_MODES:
+            problems.append(
+                "calphytorch.batch: mode %r is not batched (only %s)"
+                % (mode, ", ".join(BATCH_MODES)))
+        if opts.batch and calc.alchemy_coupling:
+            problems.append(
+                "calphytorch.batch: alchemy_coupling is not batched; run "
+                "those calculations without batch")
 
     if problems:
         raise ValueError(
@@ -456,8 +508,10 @@ def check_model(model, precision="float64", origin="the model"):
     if not getattr(model, "compute_stress", False):
         raise ValueError(
             "%s does not compute stress (compute_stress=False); calphytorch "
-            "reads the pressure in every averaging stage. Pass "
-            "compute_stress: true in model.kwargs" % origin
+            "reads the pressure in every averaging stage. Construct it with "
+            "compute_stress=True (for a factory named by import path, "
+            "compute_stress: true in model.kwargs; the named loaders always "
+            "compute it)" % origin
         )
 
     dtype = getattr(model, "dtype", None)
@@ -522,7 +576,7 @@ def to_calphytorch_calculation(calc, seed=None):
         data["temperature"] = float(calc._temperature)
 
     for name in ("temperature_high", "melting_cycle", "npt",
-                 "n_equilibration_steps", "n_switching_steps", "n_print_steps",
+                 "n_equilibration_steps", "n_switching_steps",
                  "n_iterations", "spring_constants", "folder_prefix"):
         if name in fields_set:
             data[name] = copy.deepcopy(getattr(calc, name))
@@ -583,7 +637,8 @@ class CalphytorchJob:
     log_to_screen : bool
     """
 
-    def __init__(self, calculation, simfolder=None, model=None, log_to_screen=False):
+    def __init__(self, calculation, simfolder=None, model=None, log_to_screen=False,
+                 write_input=True, _built=None):
         if calculation.engine != "calphytorch":
             raise ValueError(
                 "CalphytorchJob needs engine 'calphytorch', got %r" % calculation.engine
@@ -599,7 +654,12 @@ class CalphytorchJob:
         # everything that can fail on the input fails before a folder exists
         self.ct_calc = to_calphytorch_calculation(self.calc)
         n_models = 2 if self.calc.mode == "alchemy" else 1
-        if model is None:
+        if _built is not None:
+            # (model, record) already built and checked by run_batched for
+            # the first calculation of the batch: shared, not rebuilt
+            models, records = None, None
+            self.model, self._model_record = _built
+        elif model is None:
             specs = self.calc.model
             specs = specs if isinstance(specs, list) else [specs]
             if len(specs) != n_models or any(s is None or not s.name for s in specs):
@@ -615,15 +675,24 @@ class CalphytorchJob:
             if len(given) != n_models:
                 raise ValueError("pass %d model object(s) for mode %s"
                                  % (n_models, self.calc.mode))
-            models = [check_model(m, origin="the model object passed in")
-                      for m in given]
+            # a model block, when present, still sets the precision
+            specs = self.calc.model
+            specs = specs if isinstance(specs, list) else [specs]
+            precisions = [getattr(s, "precision", None) or "float64"
+                          for s in specs] if len(specs) == n_models else \
+                ["float64"] * n_models
+            models = [check_model(m, precision=p,
+                                  origin="the model object passed in")
+                      for m, p in zip(given, precisions)]
             records = [{"object": "%s.%s" % (type(m).__module__,
                                              type(m).__qualname__)} for m in given]
-        self.model = models[0] if n_models == 1 else tuple(models)
-        self._model_record = records[0] if n_models == 1 else records
+        if models is not None:
+            self.model = models[0] if n_models == 1 else tuple(models)
+            self._model_record = records[0] if n_models == 1 else records
 
         self.simfolder = simfolder if simfolder is not None else self.calc.create_folders()
-        self._write_input()
+        if write_input:
+            self._write_input()
         self.phase = None
         self.report = None
 
@@ -735,9 +804,77 @@ def _batch_key(raw):
 
 
 def _batchable(raw):
-    ct =raw.get("calphytorch") or {}
+    ct = raw.get("calphytorch") or {}
     return (raw.get("engine") == "calphytorch" and bool(ct.get("batch"))
-            and raw.get("mode", "fe") in BATCH_MODES)
+            and raw.get("mode", "fe") in BATCH_MODES
+            and not raw.get("alchemy_coupling"))
+
+
+def _batch_folder_names(calcs):
+    """One folder per calculation of a batch. calphy's folder name carries
+    the temperature as an integer and no composition, so composition-scaling
+    points get their output composition appended; any names that still
+    collide are refused before anything is created."""
+    names = []
+    for c in calcs:
+        name = c.get_folder_name()
+        if c.mode == "composition_scaling":
+            out = c.composition_scaling.output_chemical_composition
+            name += "-" + "".join("%s%d" % (el, int(n)) for el, n in out.items())
+        names.append(name)
+    seen = {}
+    for name, c in zip(names, calcs):
+        seen.setdefault(name, []).append(c)
+    clashes = [n for n, cs in seen.items() if len(cs) > 1]
+    if clashes:
+        raise ValueError(
+            "calculations of this batch would share a folder (%s): calphy "
+            "names folders by integer temperature, so points closer than 1 K "
+            "or duplicated points cannot run in one batch"
+            % ", ".join(sorted(clashes)))
+    return names
+
+
+def _batch_fingerprint(calcs, names):
+    """Hash of everything a batch's results depend on that calphy knows: the
+    validated inputs (model blocks included), the structure files' contents
+    and the folder names. The seeds backfilled at the first submission are
+    not part of it -- they are recorded next to it and reused."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for c, name in zip(calcs, names):
+        dump = c.model_dump(exclude={"kernel", "inputfile"})
+        digest.update(yaml.safe_dump(_yaml_safe(dump), sort_keys=True).encode())
+        digest.update(name.encode())
+        lattice = getattr(c, "lattice", None)
+        if isinstance(lattice, str) and os.path.isfile(lattice):
+            with open(lattice, "rb") as fin:
+                digest.update(fin.read())
+    return digest.hexdigest()
+
+
+def preflight(raw_calculations):
+    """Checks on the raw input that ``calphy -i`` runs before submitting
+    anything: what input validation cannot refuse (the Python API may pass
+    model objects instead of a model block) but would only fail inside the
+    job."""
+    problems = []
+    for index, raw in enumerate(raw_calculations):
+        if raw.get("engine") != "calphytorch":
+            continue
+        n_models = 2 if raw.get("mode") == "alchemy" else 1
+        specs = raw.get("model")
+        specs = specs if isinstance(specs, list) else [specs]
+        if len(specs) != n_models or any(
+                not isinstance(s, dict) or not s.get("name") for s in specs):
+            problems.append(
+                "calculation %d: engine 'calphytorch' needs a 'model' block "
+                "naming the potential (model: {name: ...})%s"
+                % (index, "; mode alchemy needs a list of two"
+                   if n_models == 2 else ""))
+    if problems:
+        raise ValueError("\n".join(problems))
 
 
 def batch_groups(raw_calculations):
@@ -798,25 +935,52 @@ def run_batched(calculations, raw_calculations=None, log_to_screen=False):
     if mode not in BATCH_MODES:
         raise ValueError("mode %r is not batched; run it on its own" % mode)
 
-    folders = [c.get_folder_name() for c in calcs]
+    folders = _batch_folder_names(calcs)
     tag = hashlib.sha1("\n".join(folders).encode()).hexdigest()[:10]
     ckdir = os.path.join(os.path.dirname(os.path.abspath(folders[0])),
                          "calphytorch_grid_" + tag)
-    resuming = os.path.isdir(ckdir)
+    record_path = os.path.join(ckdir, "calphy_batch.yaml")
+    fingerprint = _batch_fingerprint(calcs, folders)
+    calcs = [copy.deepcopy(c) for c in calcs]
 
-    def folder_for(name):
-        # a resumed grid continues in the folders it wrote
-        return name if resuming and os.path.isdir(name) else None
+    if os.path.isdir(ckdir):
+        # a resubmission: it may continue only the batch that wrote ckdir
+        record = None
+        if os.path.isfile(record_path):
+            with open(record_path) as fin:
+                record = yaml.safe_load(fin) or {}
+        if record is None or record.get("fingerprint") != fingerprint:
+            raise ValueError(
+                "%s holds a batch run with different inputs (calculation "
+                "settings, model or structure) than this one; resuming would "
+                "report its results under these inputs. Delete it and the "
+                "calculation folders %s to start over."
+                % (ckdir, ", ".join(folders)))
+        for c, seed in zip(calcs, record["seeds"]):
+            c.md.seed = int(seed)       # the seeds the checkpoints were made with
+    else:
+        clash = [f for f in folders if os.path.exists(f)]
+        if clash:
+            raise ValueError("Simulation folder(s) %s exist. Please remove and "
+                             "run again!" % ", ".join(clash))
+        for c in calcs:
+            if c.md.seed is None:
+                c.md.seed = int(np.random.SeedSequence().entropy % (2**31 - 2)) + 1
+        os.makedirs(ckdir)
+        with open(record_path, "w") as fout:
+            yaml.safe_dump({"fingerprint": fingerprint, "folders": folders,
+                            "seeds": [int(c.md.seed) for c in calcs]}, fout)
 
-    first = CalphytorchJob(calcs[0], simfolder=folder_for(folders[0]),
-                           log_to_screen=log_to_screen)
-    jobs = [first]
-    for c, name in zip(calcs[1:], folders[1:]):
-        job = CalphytorchJob(c, simfolder=folder_for(name), model=first.model,
-                             log_to_screen=log_to_screen)
-        job._model_record = first._model_record
+    jobs, built = [], None
+    for c, name in zip(calcs, folders):
+        new = not os.path.isdir(name)
+        if new:
+            os.mkdir(name)
+        job = CalphytorchJob(c, simfolder=name, log_to_screen=log_to_screen,
+                             write_input=new, _built=built)
+        built = (job.model, job._model_record)
         jobs.append(job)
-    os.makedirs(ckdir, exist_ok=True)
+    first = jobs[0]
 
     from calphytorch.checkpoint import install_wall_clock_handler
     from calphytorch.routines import routine_alchemy_grid, routine_fe_grid
