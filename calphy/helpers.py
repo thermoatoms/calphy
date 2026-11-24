@@ -2,128 +2,150 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 import os
+import sys
 import shutil
 import warnings
 import logging
 import numpy as np
 from collections import Counter, defaultdict
 
-from pylammpsmpi import LammpsLibrary
-from lammps import lammps
 from ase.io import read, write
+from importlib.metadata import version as _dist_version
 
-import pyscal3.core as pc
-from pyscal3.trajectory import Trajectory
+#: pyscal 4 (still published as ``pyscal3``) is the minimum, as in
+#: pyproject.toml; conda environments and --no-deps installs bypass that pin.
+PYSCAL_MIN_MAJOR = 4
 
 
-class LammpsScript:
-    """Collect LAMMPS commands instead of executing them.
+def check_pyscal_version(installed=None):
+    """Raise ImportError unless the installed pyscal3 is at least version 4."""
+    if installed is None:
+        installed = _dist_version("pyscal3")
+    if int(installed.split(".")[0]) < PYSCAL_MIN_MAJOR:
+        raise ImportError(
+            "calphy needs pyscal3 >= %d.0.0 (the pyscal 4 API), found %s; "
+            "upgrade with: pip install 'pyscal3>=%d.0.0'"
+            % (PYSCAL_MIN_MAJOR, installed, PYSCAL_MIN_MAJOR)
+        )
 
-    Mirrors a small subset of the ``pylammpsmpi.LammpsLibrary`` interface so the
-    same calphy code paths can either run LAMMPS in-process or emit a script
-    that is executed by an external ``lmp`` binary. Any unknown attribute is
-    treated as a LAMMPS command name and lowered to ``command(...)``.
+
+check_pyscal_version()
+
+import pyscal3
+from pyscal3 import Trajectory
+
+from calphy.runner import (
+    ExecutableRunner,
+    resolve_lammps_executable,
+    resolve_mpi_executable,
+    preflight,
+)
+
+
+def create_object(calc, directory):
     """
+    Create the LAMMPS runner backend selected by ``calc.execution_mode``.
 
-    # Methods that must NOT be auto-lowered to LAMMPS commands.
-    _RESERVED_NAMES = frozenset({"script", "command", "write", "close", "clear"})
-
-    def __init__(self):
-        self.script = []
-
-    def command(self, command_str):
-        self.script.append(command_str)
-
-    def write(self, infile):
-        with open(infile, "w") as fout:
-            for line in self.script:
-                fout.write(f"{line}\n")
-
-    def close(self):
-        pass
-
-    def clear(self):
-        self.script = []
-
-    def __getattr__(self, name):
-        if name.startswith("_") or name in LammpsScript._RESERVED_NAMES:
-            raise AttributeError(name)
-
-        def _emit(*args):
-            self.command(" ".join([name, *(str(a) for a in args)]))
-
-        return _emit
-
-
-def create_object(
-    cores,
-    directory,
-    timestep,
-    cmdargs="",
-    init_commands=(),
-    script_mode=False,
-    lmp=None,
-):
-    """
-    Create LAMMPS object
+    ``executable`` (the default) resolves the ``lmp`` (and, for ``cores > 1``,
+    ``mpirun``) binary, runs the preflight capability check, and returns an
+    ``ExecutableRunner``.  ``library`` returns a ``LibraryRunner`` driving a
+    live pylammpsmpi session (optional dependency; imported lazily so the
+    default mode never needs it).  Both are primed with the same four init
+    commands calphy has always emitted (with the ``md.init_commands`` override
+    merge preserved verbatim).
 
     Parameters
     ----------
-    cores : int
-        number of cores
+    calc : Calculation
+        the validated calculation object
 
-    directory: string
-        location of the work directory
-
-    timestep: float
-        timestep for the simulation
+    directory : string
+        location of the work (sim) folder
 
     Returns
     -------
-    lmp : LammpsLibrary object
+    lmp : BaseRunner
+        an ``ExecutableRunner`` or ``LibraryRunner``
     """
-    if script_mode:
-        lmp = LammpsScript()
-    elif lmp is None:
-        if cmdargs == "":
-            cmdargs = []
-        elif isinstance(cmdargs, str):
-            cmdargs = cmdargs.split()
-        else:
-            cmdargs = list(cmdargs)
-        # Suppress LAMMPS stdout; Python logging handles screen output
-        if "-screen" not in cmdargs:
-            cmdargs.extend(["-screen", "none"])
-        lmp = LammpsLibrary(cores=cores, working_directory=directory, cmdargs=cmdargs)
+    if calc.execution_mode == "library":
+        from calphy.library_runner import LibraryRunner
 
+        lmp = LibraryRunner(
+            cores=calc.queue.cores,
+            cmdargs=calc.md.cmdargs,
+            directory=directory,
+        )
+        return _emit_init_commands_or_close(lmp, calc)
+
+    binary = resolve_lammps_executable(calc.lammps_executable)
+    mpi_command = (
+        resolve_mpi_executable(calc.mpi_executable) if calc.queue.cores > 1 else None
+    )
+    # once per calculation; get_binary_styles caches per (path, mtime)
+    preflight(calc, binary)
+
+    lmp = ExecutableRunner(
+        binary=binary,
+        mpi_command=mpi_command,
+        cores=calc.queue.cores,
+        cmdargs=calc.md.cmdargs,
+        directory=directory,
+        dry_run=False,
+    )
+    return _emit_init_commands_or_close(lmp, calc)
+
+
+def _emit_init_commands_or_close(lmp, calc):
+    """Run :func:`emit_init_commands`, closing ``lmp`` if it raises.
+
+    The caller only gets hold of the runner once :func:`create_object`
+    returns, so a failure here would otherwise leave the session (in library
+    mode, the executor behind it) open."""
+    try:
+        return emit_init_commands(lmp, calc)
+    except BaseException:
+        lmp.__exit__(*sys.exc_info())
+        raise
+
+
+def emit_init_commands(lmp, calc):
+    """Emit the four init commands (units/boundary/atom_style/timestep),
+    applying the ``md.init_commands`` override merge, onto ``lmp``.
+
+    ``box tilt large`` was dropped upstream (ICAMS/calphy#262): the ``box``
+    command is deprecated in LAMMPS since 22Dec2022 and its arguments are
+    ignored.  The token stays in the runner vocabulary so older
+    ``md.init_commands`` overrides that still emit one keep validating."""
     commands = [
         ["units", "metal"],
         ["boundary", "p p p"],
         ["atom_style", "atomic"],
-        ["timestep", str(timestep)],
-        ["box", "tilt large"],
+        ["timestep", str(calc.md.timestep)],
     ]
 
+    init_commands = calc.md.init_commands
     if len(init_commands) > 0:
         # we need to replace some initial commands
         for rc in init_commands:
@@ -150,14 +172,14 @@ def create_structure(lmp, calc):
 
     Parameters
     ----------
-    lmp: LammpsLibrary object
+    lmp: BaseRunner
 
     calc: dict
         calculation dict with the necessary input
 
     Returns
     -------
-    lmp : LammpsLibrary object
+    lmp : BaseRunner
     """
     lmp.command("read_data      %s" % calc.lattice)
     return lmp
@@ -220,26 +242,78 @@ def _component_pair_coeffs(options):
     return components
 
 
+def hybrid_component_tags(style_names):
+    """
+    Sub-style tags of the components of a hybrid pair_style.
+
+    LAMMPS addresses a sub-style of a hybrid pair_style by its name, followed
+    by a 1-based occurrence index when the same style appears more than once
+    (``pair_coeff * * eam/alloy 2 ...``, ``compute c all pair eam/alloy 2``).
+
+    Parameters
+    ----------
+    style_names : list of str
+        Style names in the order they appear in the hybrid pair_style.
+
+    Returns
+    -------
+    list of (str, int or None)
+        One (name, index) tag per component; the index is None for a style
+        that occurs once.
+    """
+    counts = Counter(style_names)
+    seen = defaultdict(int)
+    tags = []
+    for name in style_names:
+        seen[name] += 1
+        tags.append((name, seen[name] if counts[name] > 1 else None))
+    return tags
+
+
+def hybrid_pair_coeff_commands_for(style_names, pair_coeffs):
+    """
+    ``pair_coeff`` commands for the components of a hybrid pair_style.
+
+    Parameters
+    ----------
+    style_names : list of str
+        Style names in hybrid order, one per pair_coeff.
+    pair_coeffs : list of str
+        The pair_coeff arguments, with or without the style name already
+        included after the type pair.
+    """
+    return [
+        "pair_coeff       %s" % _with_hybrid_pair_coeff_style(pair_coeff, name, index)
+        for (name, index), pair_coeff in zip(hybrid_component_tags(style_names), pair_coeffs)
+    ]
+
+
+def hybrid_pair_compute_commands(compute_ids, tags):
+    """
+    ``compute pair`` commands, one per hybrid sub-style tag.
+
+    Returns the commands and the LAMMPS expression summing the computes.
+    """
+    commands = []
+    for compute_id, (name, index) in zip(compute_ids, tags):
+        if index is None:
+            commands.append("compute          %s all pair %s" % (compute_id, name))
+        else:
+            commands.append(
+                "compute          %s all pair %s %d" % (compute_id, name, index)
+            )
+    return commands, "+".join("c_%s" % compute_id for compute_id in compute_ids)
+
+
 def hybrid_pair_coeff_commands(options, repeat_index=0, total_repeats=1):
     components = _component_pair_coeffs(options)
-    active_style_names = []
-    for _ in range(total_repeats):
-        active_style_names.extend([style_name for style_name, _ in components])
-    total_counts = Counter(active_style_names)
-    seen = defaultdict(int)
-    for _ in range(repeat_index):
-        for style_name, _ in components:
-            seen[style_name] += 1
-
-    commands = []
-    for style_name, pair_coeff in components:
-        seen[style_name] += 1
-        style_index = seen[style_name] if total_counts[style_name] > 1 else None
-        commands.append(
-            "pair_coeff       %s"
-            % _with_hybrid_pair_coeff_style(pair_coeff, style_name, style_index)
-        )
-    return commands
+    n = len(components)
+    style_names = [style_name for style_name, _ in components] * total_repeats
+    tags = hybrid_component_tags(style_names)[repeat_index * n : (repeat_index + 1) * n]
+    return [
+        "pair_coeff       %s" % _with_hybrid_pair_coeff_style(pair_coeff, name, index)
+        for (name, index), (_, pair_coeff) in zip(tags, components)
+    ]
 
 
 def set_pair_coeff(lmp, options):
@@ -265,35 +339,12 @@ def real_pair_compute_commands(
     options, prefix="c_real", total_repeats=1, repeat_index=0
 ):
     components = _component_pair_coeffs(options)
-    active_style_names = []
-    for _ in range(total_repeats):
-        active_style_names.extend([style_name for style_name, _ in components])
-    total_counts = Counter(active_style_names)
-    seen = defaultdict(int)
-    for _ in range(repeat_index):
-        for style_name, _ in components:
-            seen[style_name] += 1
-
-    commands = []
-    terms = []
-    for idx, (style_name, _) in enumerate(components, start=1):
-        seen[style_name] += 1
-        compute_id = "%s%d" % (prefix, idx)
-        if total_counts[style_name] > 1:
-            commands.append(
-                "compute          %s all pair %s %d"
-                % (compute_id, style_name, seen[style_name])
-            )
-        else:
-            commands.append(
-                "compute          %s all pair %s" % (compute_id, style_name)
-            )
-        terms.append("c_%s" % compute_id)
-    return (
-        commands,
-        "+".join(terms),
-        ["%s%d" % (prefix, idx) for idx in range(1, len(components) + 1)],
-    )
+    n = len(components)
+    style_names = [style_name for style_name, _ in components] * total_repeats
+    tags = hybrid_component_tags(style_names)[repeat_index * n : (repeat_index + 1) * n]
+    compute_ids = ["%s%d" % (prefix, idx) for idx in range(1, n + 1)]
+    commands, energy = hybrid_pair_compute_commands(compute_ids, tags)
+    return commands, energy, compute_ids
 
 
 def set_potential(lmp, options):
@@ -302,13 +353,13 @@ def set_potential(lmp, options):
 
     Parameters
     ----------
-    lmp : LammpsLibrary object
+    lmp : BaseRunner
 
     options : dict
 
     Returns
     -------
-    lmp : LammpsLibrary object
+    lmp : BaseRunner
     """
     set_pair_style(lmp, options)
     set_pair_coeff(lmp, options)
@@ -326,10 +377,8 @@ def read_data(lmp, file):
 def get_structures(file, species, index=None):
     traj = Trajectory(file)
     if index is None:
-        aseobjs = traj[:].to_ase(species=species)
-    else:
-        aseobjs = traj[index].to_ase(species=species)
-    return aseobjs
+        return traj[:].to_atoms(species=species)
+    return traj[index].to_atoms(species=species)
 
 
 def remap_box(lmp, x, y, z):
@@ -358,6 +407,10 @@ def compute_msd(lmp, options):
         lmp.command("compute          c%d g%d msd com yes" % (i + 1, i + 1))
         lmp.command("variable         msd%d equal c_c%d[4]" % (i + 1, i + 1))
         str2.append("v_msd%d" % (i + 1))
+    title_cols = "# TimeStep " + " ".join(
+        "msd%d[A^2]" % (i + 1) for i in range(len(elements))
+    )
+    str2.append('title2 "%s"' % title_cols)
     str2.append("file")
     str2.append("msd.dat")
     str2 = " ".join(str2)
@@ -373,14 +426,13 @@ PYSCAL helper routines
 
 
 def find_solid_fraction(file):
-    sys = pc.System(file)
+    atoms = Trajectory(file)[0].to_atoms()[0]
     try:
-        sys.find.neighbors(method="cutoff", cutoff=0)
+        pyscal3.find_neighbors(atoms, method="cutoff", cutoff=0)
     except RuntimeError:
-        sys.find.neighbors(method="cutoff", cutoff=5.0)
-    sys.find.solids(cluster=False)
-    solids = np.sum(sys.atoms.solid)
-    return solids
+        pyscal3.find_neighbors(atoms, method="cutoff", cutoff=5.0)
+    pyscal3.find_solids(atoms, cluster=False)
+    return np.sum(atoms.arrays["pyscal_solid"])
 
 
 def write_data(lmp, file):

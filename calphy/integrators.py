@@ -2,23 +2,25 @@
 calphy: a Python library and command line interface for automated free
 energy calculations.
 
-Copyright 2021  (c) Sarath Menon^1, Yury Lysogorskiy^2, Ralf Drautz^2
-^1: Max Planck Institut für Eisenforschung, Dusseldorf, Germany
-^2: Ruhr-University Bochum, Bochum, Germany
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-calphy is published and distributed under the Academic Software License v1.0 (ASL).
-calphy is distributed in the hope that it will be useful for non-commercial academic research,
-but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-calphy API is published and distributed under the BSD 3-Clause "New" or "Revised" License
-See the LICENSE FILE for more details.
+calphy is published and distributed under the Academic Software Licence v1.0 (ASL).
+calphy is distributed in the hope that it will be useful for non-commercial academic
+research, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
+
+The ASL permits academic non-commercial use only. Contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
 
 More information about the program can be found in:
 Menon, Sarath, Yury Lysogorskiy, Jutta Rogal, and Ralf Drautz.
-“Automated Free Energy Calculation from Atomistic Simulations.” Physical Review Materials 5(10), 2021
+"Automated Free Energy Calculation from Atomistic Simulations." Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801
 
 For more information contact:
-sarath.menon@ruhr-uni-bochum.de/yury.lysogorskiy@icams.rub.de
+sarath.menon@ruhr-uni-bochum.de
 """
 
 import numpy as np
@@ -40,7 +42,6 @@ from scipy.integrate import cumulative_trapezoid as cumtrapz
 from numpy import trapezoid as trapz
 
 from tqdm import tqdm
-import pyscal3.core as pc
 from ase.io import read
 
 # Constants
@@ -193,7 +194,10 @@ def find_w(mainfolder, calc, full=False, solid=True, prefix=""):
 
     wsmean = np.mean(ws)
     qsmean = np.mean(qs)
-    wsstd = np.std(ws)
+    # Uncertainty on the *mean* of n_iterations independent switching runs is the
+    # standard error of the mean (SEM = sample std / sqrt(N)), not the spread of
+    # the individual runs.  A single run yields no error estimate.
+    wsstd = np.std(ws, ddof=1) / np.sqrt(len(ws)) if len(ws) > 1 else 0.0
 
     if full:
         return wsmean, qsmean, wsstd
@@ -288,15 +292,23 @@ def integrate_rs(
         ws.append(w)
         es.append(e)
 
-    e_diss = np.min(es)
+    # worst iteration: one sweep that crossed a transition must not be hidden
+    # behind a clean one
+    e_diss = np.max(es)
     wmean = np.mean(ws, axis=0)
-    werr = np.std(ws, axis=0)
+    # standard error of the mean across the nsims independent sweeps (see find_w)
+    werr = np.std(ws, axis=0, ddof=1) / np.sqrt(len(ws)) if len(ws) > 1 else np.zeros_like(wmean)
     temp = t / flambda
 
     f = f0 / flambda + 1.5 * kb * temp * np.log(flambda) + wmean
 
     outfile = os.path.join(simfolder, "temperature_sweep.dat")
-    np.savetxt(outfile, np.column_stack((temp, f, werr)))
+    np.savetxt(
+        outfile,
+        np.column_stack((temp, f, werr)),
+        header="reversible-scaling free energy vs temperature\n"
+        "temperature[K]  free_energy[eV/atom]  error[eV/atom]",
+    )
 
     if not return_values:
         return None, e_diss
@@ -350,7 +362,8 @@ def integrate_ps(simfolder, f0, natoms, pi, pf, nsims=1, return_values=False):
         ws.append(w)
 
     wmean = np.mean(ws, axis=0)
-    werr = np.std(ws, axis=0)
+    # standard error of the mean across the nsims independent sweeps (see find_w)
+    werr = np.std(ws, axis=0, ddof=1) / np.sqrt(len(ws)) if len(ws) > 1 else np.zeros_like(wmean)
 
     press = np.linspace(pi, pf, len(wmean))
 
@@ -358,7 +371,12 @@ def integrate_ps(simfolder, f0, natoms, pi, pf, nsims=1, return_values=False):
 
     if not return_values:
         outfile = os.path.join(simfolder, "pressure_sweep.dat")
-        np.savetxt(outfile, np.column_stack((press, f, werr)))
+        np.savetxt(
+            outfile,
+            np.column_stack((press, f, werr)),
+            header="pressure-scaling free energy vs pressure\n"
+            "pressure[bar]  free_energy[eV/atom]  error[eV/atom]",
+        )
     else:
         return (press, f, werr)
 

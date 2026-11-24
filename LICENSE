@@ -1,7 +1,72 @@
+calphy: a Python library and command line interface for automated free
+energy calculations.
 
-Calphy as a complete tool, including the Command line interface, job manager (kernel.py, queuekernel.py, scheduler.py) are released under the Academic Software License (ASL), see below for description.
+Copyright 2021-2026 (c) Sarath Menon, Yury Lysogorskiy, Ralf Drautz
+Interdisciplinary Centre for Advanced Materials Simulation (ICAMS),
+Ruhr University Bochum, 44801 Bochum, Germany
 
-The Calphy API (all other files) are released under the BSD 3-Clause "New" or "Revised" License.
+calphy in its entirety -- the command line interface, the job manager and the
+Python API alike -- is published and distributed under the Academic Software
+Licence v1.0 (ASL), reproduced in full below.
+
+calphy is distributed in the hope that it will be useful for non-commercial
+academic research, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the ASL for more
+details.
+
+The ASL permits academic non-commercial use only. If you intend to use calphy
+commercially, you must obtain a separate commercial licence. Please contact
+sarath.menon@ruhr-uni-bochum.de to enquire about commercial use rights.
+
+
+## Licensing of earlier releases
+
+Releases up to and including calphy 2.0.1 were distributed under a split
+licence: the command line interface and job manager (kernel.py,
+queuekernel.py, scheduler.py) under the ASL, and the remainder of the Python
+API under the BSD 3-Clause "New" or "Revised" License. Some releases before
+2022 were distributed under the GNU General Public Licence (v3 up to July
+2021, v2 up to January 2022).
+
+Those grants are not withdrawn and continue to apply to the versions they were
+published with. From calphy 2.1.0 onwards, new releases are made available
+under the ASL only.
+
+Portions of calphy were contributed by third parties under the BSD 3-Clause
+License while that licence applied. Those contributions are redistributed here
+under the ASL as permitted by the BSD 3-Clause License, and the following
+notice is retained in respect of them:
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+    met:
+
+    1. Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+    IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+    THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+    PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+    CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+    EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+    PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+    PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+A list of contributors is available at
+https://github.com/ICAMS/calphy/graphs/contributors
+
 
 # Academic Software Licence (“ASL”)
 
@@ -15,7 +80,7 @@ ASL is a reciprocal licence very similar to GPL and the core terms are identical
 
 The non-commercial limitation makes ASL incompatible with the GPL and other open-source licences with copyleft provisions because these licences require that modified versions of the original program are made available free of charge for any type of use, including commercial, and this is prevented by ASL.  As the two sets of reciprocal terms are incompatible, any modified version of the original program combining ASL and copylefted open-source code can be used internally but cannot be licensed out.
 
-The non-commercial restriction is an integral part of the license and you may not remove it without the consent of the rights holder in the ASL licensed code. Please contact __[ICAMS, Ruhr University Bochum](atom-office@icams.rub.de)__ for any questions and/or to enquire about commercial use rights. 
+The non-commercial restriction is an integral part of the license and you may not remove it without the consent of the rights holder in the ASL licensed code. Please contact __[ICAMS, Ruhr University Bochum](mailto:sarath.menon@ruhr-uni-bochum.de)__ for any questions and/or to enquire about commercial use rights. 
 
 *The changes to the GPLv2 are: removing the Preamble, replacing the reference to the “General Public License” in clause 0 with a reference to the “ASL”, removing clause 9 and adding clause 13 with the non-commercial restriction and limited patent grant
 

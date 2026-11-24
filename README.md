@@ -5,6 +5,7 @@
 - <img src="https://render.githubusercontent.com/render/math?math=F(V_i,T_i)"> and <img src="https://render.githubusercontent.com/render/math?math=G(P_i,T_i)"> for both solid and liquid phases at the given thermodynamic conditions using [non-equilibrium Hamiltonian interpolation](https://linkinghub.elsevier.com/retrieve/pii/S0927025615007089).
 - <img src="https://render.githubusercontent.com/render/math?math=F(T_i \to T_f)"> and <img src="https://render.githubusercontent.com/render/math?math=G(T_i \to T_f)">, temperature dependence of Gibbs and Helmholtz free energies using the [reversible scaling](https://link.aps.org/doi/10.1103/PhysRevLett.83.3973) approach.
 - Calculation of solid-solid or solid-liquid phase transition temperatures.
+- Calculation of solid-liquid coexistence lines <img src="https://render.githubusercontent.com/render/math?math=P_{coex}(T)"> over a wide pressure range from a single known coexistence point using [dynamic Clausius-Clapeyron integration](https://doi.org/10.1063/1.1420486).
 - Calculation of specific heat <img src="https://render.githubusercontent.com/render/math?math=c_P(T)"> as a function of temperature.
 - Calculation of <img src="https://render.githubusercontent.com/render/math?math=F(x, T)"> and <img src="https://render.githubusercontent.com/render/math?math=G(x, T)"> for multicomponent systems using [alchemical transformations](https://journals.aps.org/prmaterials/abstract/10.1103/PhysRevMaterials.5.103801).
 - [Upsampling calculations](https://journals.aps.org/prmaterials/abstract/10.1103/PhysRevMaterials.5.103801).
@@ -28,6 +29,24 @@ Physical Review Materials 5(10), 2021
 DOI: 10.1103/PhysRevMaterials.5.103801  
 
 Download bibtex [here](https://journals.aps.org/prmaterials/export/10.1103/PhysRevMaterials.5.103801?type=bibtex&download=true)
+
+
+## License
+
+calphy is published and distributed under the **Academic Software Licence v1.0 (ASL)**,
+a reciprocal licence whose core terms match the GNU GPLv2 but which permits
+**academic non-commercial use only**. It is an available-source, not an open-source,
+licence. See [LICENSE](LICENSE) for the full terms.
+
+If you intend to use calphy commercially, you need a separate commercial licence.
+Please contact <sarath.menon@ruhr-uni-bochum.de> to enquire about commercial use rights.
+
+Releases up to and including 2.0.1 were distributed under a split ASL / BSD-3-Clause
+licence (and earlier releases under the GNU GPL). Those grants continue to apply to
+the versions they were published with; from 2.1.0 onwards calphy is ASL only.
+
+Note that calphy drives [LAMMPS](https://www.lammps.org/), which is licensed
+separately under the GNU GPLv2. calphy does not include LAMMPS.
 
 
 [![Anaconda-Server Badge](https://anaconda.org/conda-forge/calphy/badges/installer/conda.svg)](https://conda.anaconda.org/conda-forge)
