@@ -5,3 +5,4 @@ Using calphy
 
   cli
   onclusters
+  calphytorch
